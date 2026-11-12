@@ -1,0 +1,31 @@
+Commit history: 5 commit(s) continue the hash chain.
+  AS	build/rubik/s-search_core.o
+  LD	build/rubik/impl_asm.o
+  LD	build/rubik/O1/rubik.elf
+  LD	build/rubik/O2/rubik.elf
+  LD	build/rubik/O3/rubik.elf
+  LD	build/rubik/Os/rubik.elf
+listings: build/<prog>/<opt>/<prog>.dis and build/<prog>/asm.dis
+scripts/driver.py --emu third_party/rv32emu/build/rv32emu --build build --prefix xpack/bin//riscv-none-elf- --out results
+--- wrote results/cycles.csv, footprint.csv, cycles.md, cycles-per-call.png, speedup.png, footprint.png
+--- toolchain    PASS    5.0/5
+--- emulator     PASS   10.0/10
+--- rubik        PASS   15.0/15
+--- bf16         PASS   15.0/15
+--- gcd          PASS   15.0/15
+--- fixed        PASS   15.0/15
+--- disassembly  PASS    5.0/5
+--- cycles       PASS   10.0/10
+    - bf16.from_f32: assembly is slower than the best C build (0.98x)
+    - bf16.mul: assembly beats the best C build (1.69x)
+    - bf16.sqrt: assembly beats the best C build (3.23x)
+    - fixed.op1: assembly matches the best C build (1.00x)
+    - fixed.op2: assembly matches the best C build (1.00x)
+    - fixed.op3: assembly matches the best C build (1.00x)
+    - fixed.q_mul: assembly beats the best C build (1.05x)
+    - gcd.gcd: assembly beats the best C build (1.10x)
+    - rubik.solve: assembly beats the best C build (1.08x)
+--- footprint    PASS    5.0/5
+--- hygiene      PASS    5.0/5
+--- 4 of 4 programs pass; the other items count 100%
+--- TOTAL 100.0/100

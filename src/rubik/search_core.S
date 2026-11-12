@@ -1,0 +1,4539 @@
+/* Search core ported from the verified bloom24 experiment. Its original
+ * compiler-derived search frame is preserved; lookup, bounds, rolling masks,
+ * transitions and Bloom filtering contain the prior handwritten RV32I edits.
+ * Standalone startup, printing, system calls and global writable data removed.
+ * Table order is fixed because the preserved core uses anchor-relative offsets.
+ */
+/* Cache the last-four base9 index in high bits of the existing forbidden word.
+ * Low9 bits remain the canonical move mask. Preserve a3,t4 and all s-registers.
+ */
+/* Same packed mask/index; oldest move supplies quotient when depth>=5.
+ * Preserve a3,t4,all s-registers. history is the existing int moves[] base.
+ */
+    .macro ASM_ROLLING_FORBIDDEN parent,move,depth,out,history
+    srli t0,\parent,9
+    li t1,5
+    blt \depth,t1,.Lsmall_keep\@
+    addi t1,\depth,-5
+    slli t1,t1,2
+    add t1,\history,t1
+    lw t1,0(t1)
+    addi t1,t1,-1
+    slli t1,t1,1
+    la t3,rubik_asm_rolling_times729
+    add t1,t3,t1
+    lhu t1,0(t1)
+    sub t0,t0,t1
+.Lsmall_keep\@:
+    slli t1,t0,3
+    add t0,t0,t1
+    addi t3,\move,-1
+    add t0,t0,t3
+    li t1,0
+    li t2,3
+    bltu t3,t2,.Lsmall_shift\@
+    li t1,3
+    li t2,6
+    bltu t3,t2,.Lsmall_shift\@
+    li t1,6
+.Lsmall_shift\@:
+    li t2,7
+    sll t2,t2,t1
+    li t5,2
+    blt \depth,t5,.Lsmall_done\@
+    beq \depth,t5,.Lsmall_three\@
+    li t5,3
+    beq \depth,t5,.Lsmall_four\@
+    la t5,rubik_asm_sequence_reject5
+    j .Lsmall_table\@
+.Lsmall_three\@:
+    la t5,rubik_asm_sequence_reject3
+    j .Lsmall_table\@
+.Lsmall_four\@:
+    la t5,rubik_asm_sequence_reject4
+.Lsmall_table\@:
+    add t5,t5,t0
+    lbu t5,0(t5)
+    li t6,1
+    sll t6,t6,t1
+    addi t3,t6,-1
+    and t3,t3,t5
+    neg t6,t6
+    and t5,t5,t6
+    slli t5,t5,3
+    or t2,t2,t3
+    or t2,t2,t5
+.Lsmall_done\@:
+    slli \out,t0,9
+    or \out,\out,t2
+    .endm
+
+
+
+
+/* Same seven-cubie transition as C, expanded to remove pointer increments and
+ * loop branches. src biases accommodate the preserved compiler search frame.
+ * Inputs must be valid cubie states and src/dst must not overlap.
+ */
+    .macro ASM_MOVE_SEVEN map,delta,src,dst,pbias,obias,idx,value,orientation,limit
+    .irp I,0,1,2,3,4,5,6
+    lbu \idx,\I(\map)
+    lbu \value,\I(\delta)
+    add \idx,\src,\idx
+    lbu \orientation,\pbias(\idx)
+    sb \orientation,\I(\dst)
+    lbu \idx,\obias(\idx)
+    add \value,\value,\idx
+    ble \value,\limit,991f
+    addi \value,\value,-3
+991:
+    sb \value,7+\I(\dst)
+    .endr
+    .endm
+
+
+	.file	"solver.c"
+	.option nopic
+	.option norelax
+	.attribute arch, "rv32i2p1"
+	.attribute unaligned_access, 0
+	.attribute stack_align, 16
+	.text
+
+	.align	2
+	.type	rubik_asm_endgame_lookup, @function
+	.align	2
+	.type	rubik_asm_search_bound, @function
+	.align	2
+	.type	rubik_asm_solve_part_0, @function
+rubik_asm_solve_part_0:
+	addi	sp,sp,-416
+	sw	s8,376(sp)
+	mv	s8,a1
+	li	a1,11
+	sw	s1,404(sp)
+	sw	ra,412(sp)
+	sw	s2,400(sp)
+	mv	s1,a0
+	call	rubik_asm_search_bound
+	li	a5,11
+	bgt	a0,a5,.L107
+	lui	a5,%hi(.LANCHOR0)
+	addi	a5,a5,%lo(.LANCHOR0)
+	sw	s5,388(sp)
+	sw	s7,380(sp)
+	sw	s9,372(sp)
+	sw	s0,408(sp)
+	sw	s3,396(sp)
+	sw	s4,392(sp)
+	sw	s6,384(sp)
+	sw	s10,368(sp)
+	sw	s11,364(sp)
+	addi	s5,sp,184
+	addi	t4,sp,191
+	sw	a5,28(sp)
+	li	s9,7
+	mv	s7,a0
+.L46:
+	mv	a4,s1
+	mv	a5,s5
+.L48:
+	lbu	a2,0(a4)
+	lbu	a3,7(a4)
+	addi	a5,a5,1
+	sb	a2,-1(a5)
+	sb	a3,6(a5)
+	addi	a4,a4,1
+	bne	t4,a5,.L48
+	sw	s1,44(sp)
+	sw	zero,88(sp)
+	sw	zero,136(sp)
+	li	s2,0
+	mv	s1,s7
+	mv	a3,s8
+    li a5,6
+    bne s1,a5,.L83
+    mv a0,s5
+    sw a3,12(sp)
+    call rubik_asm_bloom6_maybe
+    lw a3,12(sp)
+    beq a0,zero,.L65
+.L83:
+	slli	s0,s2,3
+	sub	a0,s0,s2
+	slli	a0,a0,1
+	mv	s4,s2
+	sub	s6,s1,s2
+	li	a4,5
+	ble	s6,a4,.Lopt_exact
+	add	a5,s5,a0
+	li	a4,0
+.L50:
+	lbu	a2,0(a5)
+	bne	a2,a4,.L53
+	lbu	a2,7(a5)
+	addi	a4,a4,1
+	addi	a5,a5,1
+	bne	a2,zero,.L53
+	bne	a4,s9,.L50
+	beq	s2,zero,.L114
+	addi	a5,sp,88
+	slli	a2,s2,2
+	mv	a4,a3
+	add	a2,a2,a5
+.L52:
+	lw	a3,0(a5)
+	addi	a5,a5,4
+	addi	a4,a4,4
+	sw	a3,-4(a4)
+	bne	a2,a5,.L52
+	j	.L114
+.L49:
+.Lopt_exact:
+	add	a0,s5,a0
+	sw	a3,12(sp)
+	call	rubik_asm_endgame_lookup
+	lw	a3,12(sp)
+	addi	t4,sp,191
+	blt	a0,zero,.L65
+	lui	s3,%hi(rubik_asm_endgame_data)
+	addi	s3,s3,%lo(rubik_asm_endgame_data)
+	add	a0,s3,a0
+	lbu	a4,0(a0)
+	srli	a0,a4,4
+	blt	s6,a0,.L65
+	mv	s8,a3
+	beq	s2,zero,.L55
+	slli	a1,s2,2
+	add	a1,a3,a1
+	mv	a5,s8
+	addi	a3,sp,88
+.L56:
+	lw	a2,0(a3)
+	addi	a5,a5,4
+	addi	a3,a3,4
+	sw	a2,-4(a5)
+	bne	a5,a1,.L56
+.L55:
+	sub	a5,s0,s2
+	slli	a5,a5,1
+	add	a5,sp,a5
+	lhu	t1,184(a5)
+	lhu	a7,186(a5)
+	lhu	a6,188(a5)
+	lhu	a1,190(a5)
+	lhu	a2,192(a5)
+	lhu	a3,194(a5)
+	lhu	a5,196(a5)
+	sh	t1,56(sp)
+	sh	a7,58(sp)
+	sh	a6,60(sp)
+	sh	a1,62(sp)
+	sh	a2,64(sp)
+	sh	a3,66(sp)
+	sh	a5,68(sp)
+	add	s2,s2,a0
+	beq	a0,zero,.L114
+	add	s6,a0,s4
+	slli	s6,s6,2
+	slli	s4,s4,2
+	lui	s7,%hi(.LANCHOR0+732)
+	lui	a5,%hi(.LANCHOR0+796)
+	add	s6,s8,s6
+	add	s4,s8,s4
+	addi	s7,s7,%lo(.LANCHOR0+732)
+	addi	s5,a5,%lo(.LANCHOR0+796)
+	li	s1,2
+	li	s0,5
+.L63:
+	andi	a5,a4,15
+	addi	a4,a5,-1
+	sw	a5,0(s4)
+	andi	a2,a4,0xff
+	li	a3,0
+	bleu	a2,s1,.L58
+	bgtu	a2,s0,.L59
+	addi	a5,a5,-3
+	andi	a5,a5,0xff
+	addi	a4,a5,-1
+	li	a3,21
+.L58:
+	slli	a1,a4,3
+	sub	a1,a1,a4
+	add	a1,a1,a3
+	add	a3,s7,a1
+	addi	a6,a3,7
+	add	a1,s5,a1
+	addi	a2,sp,72
+.L61:
+	lbu	a4,0(a3)
+	lbu	a5,0(a1)
+	addi	a3,a3,1
+	add	a4,sp,a4
+	lbu	a0,56(a4)
+	lbu	a4,63(a4)
+	addi	a1,a1,1
+	sb	a0,0(a2)
+	add	a5,a5,a4
+	ble	a5,s1,.L60
+	addi	a5,a5,-3
+.L60:
+	sb	a5,7(a2)
+	addi	a2,a2,1
+	bne	a6,a3,.L61
+	lw	a2,72(sp)
+	lw	a3,76(sp)
+	lw	a4,80(sp)
+	lhu	a5,84(sp)
+	addi	s4,s4,4
+	sw	a2,56(sp)
+	sw	a3,60(sp)
+	sw	a4,64(sp)
+	sh	a5,68(sp)
+	bne	s4,s6,.L115
+.L114:
+	lw	s0,408(sp)
+	lw	s3,396(sp)
+	lw	s4,392(sp)
+	lw	s5,388(sp)
+	lw	s6,384(sp)
+	lw	s7,380(sp)
+	lw	s9,372(sp)
+	lw	s10,368(sp)
+	lw	s11,364(sp)
+.L45:
+	lw	ra,412(sp)
+	lw	s1,404(sp)
+	lw	s8,376(sp)
+	mv	a0,s2
+	lw	s2,400(sp)
+	addi	sp,sp,416
+	jr	ra
+.L115:
+	addi	a0,sp,56
+	call	rubik_asm_endgame_lookup
+	add	a0,s3,a0
+	lbu	a4,0(a0)
+	j	.L63
+.L66:
+	addi	s11,s11,1
+	li	a5,10
+	addi	s1,s1,1
+	bne	s11,a5,.L81
+	lw	s2,32(sp)
+	lw	a3,36(sp)
+	mv	s1,s6
+.L65:
+	addi	s2,s2,-1
+	li	a5,-1
+	bne	s2,a5,.L83
+	addi	s7,s1,1
+	li	a5,12
+	lw	s1,44(sp)
+	mv	s8,a3
+	bne	s7,a5,.L46
+	j	.L114
+.L53:
+	addi	s3,sp,88
+	slli	a7,s2,2
+	add	t1,s3,a7
+	lw	s7,0(t1)
+	li	a5,9
+	addi	s8,s7,1
+	bgt	s8,a5,.L65
+	addi	s11,s2,1
+	slli	a5,s11,3
+	sub	s6,s0,s2
+	slli	s6,s6,1
+	sub	s0,a5,s11
+	addi	a0,a0,14
+	addi	a5,sp,352
+	add	s6,a5,s6
+	addi	s4,sp,136
+	add	a5,s5,a0
+	add	a4,s4,a7
+	sw	a5,24(sp)
+	lw	a5,28(sp)
+	lw	t5,0(a4)
+	slli	s0,s0,1
+	add	s0,s5,s0
+	addi	a5,a5,796
+	sub	a1,s1,s11
+	sw	s0,20(sp)
+	sw	s2,32(sp)
+	li	s10,2
+	mv	s2,s11
+	sw	a5,16(sp)
+	mv	s11,s8
+	mv	s0,t1
+	mv	s8,s6
+	sw	a7,40(sp)
+	mv	s6,s1
+	sw	a3,36(sp)
+	mv	s1,s7
+	mv	s7,t5
+.L81:
+	srl	a5,s7,s1
+	sw	s11,0(s0)
+	andi	a5,a5,1
+	bne	a5,zero,.L66
+    addi a0,s8,-168
+    lw a2,20(sp)
+    mv a3,s1
+    call rubik_asm_fixed_move_core
+	li	a5,5
+	ble	a1,a5,.L71
+	lw	a0,24(sp)
+	sw	a1,12(sp)
+	call	rubik_asm_search_bound
+	add	a0,s2,a0
+	lw	a1,12(sp)
+	addi	t4,sp,191
+	bgt	a0,s6,.L66
+    li a5,6
+    bne a1,a5,.L71
+    lw a0,24(sp)
+    call rubik_asm_bloom6_maybe
+    beq a0,zero,.L66
+.L71:
+    li a5,5
+    bgt a1,a5,.Lopt_expand_metadata
+    lw a3,36(sp)
+    mv s1,s6
+    j .L83
+.Lopt_expand_metadata:
+    ASM_ROLLING_FORBIDDEN s7,s11,s2,a0,s3
+    slli a4,s2,2
+    add a5,s3,a4
+    sw zero,0(a5)
+    add a5,s4,a4
+    sw a0,0(a5)
+    lw a3,36(sp)
+    mv s1,s6
+    j .L83
+.L59:
+	addi	a5,a5,-6
+	andi	a5,a5,0xff
+	addi	a4,a5,-1
+	li	a3,42
+	j	.L58
+.L107:
+	li	s2,-1
+	j	.L45
+	.size	rubik_asm_solve_part_0, .-rubik_asm_solve_part_0
+	.align	2
+	.globl	rubik_asm_solve
+	.type	rubik_asm_solve, @function
+rubik_asm_solve:
+	mv	a5,a0
+	li	a4,0
+	li	a2,7
+.L130:
+	lbu	a3,0(a5)
+	bne	a4,a3,.L129
+	lbu	a3,7(a5)
+	addi	a4,a4,1
+	addi	a5,a5,1
+	bne	a3,zero,.L129
+	bne	a4,a2,.L130
+	li	a0,0
+	ret
+.L129:
+	tail	rubik_asm_solve_part_0
+	.size	rubik_asm_solve, .-rubik_asm_solve
+	.section	.rodata.str1.4
+	.align	2
+.LC4:
+	.string	"R"
+	.align	2
+.LC5:
+	.string	"R2"
+	.align	2
+.LC6:
+	.string	"R'"
+	.align	2
+.LC7:
+	.string	"B"
+	.align	2
+.LC8:
+	.string	"B2"
+	.align	2
+.LC9:
+	.string	"B'"
+	.align	2
+.LC10:
+	.string	"D"
+	.align	2
+.LC11:
+	.string	"D2"
+	.align	2
+.LC12:
+	.string	"D'"
+	.section	.rodata
+	.align	2
+	.set	.LANCHOR0,. + 0
+	.type	rubik_asm_compact_orient_dist, @object
+	.size	rubik_asm_compact_orient_dist, 729
+rubik_asm_compact_orient_dist:
+	.base64	"AAUFBAQFBAYDBgMEBAMFBQEFBQQEBQUDAwUEBAMGBAUEBQQEBAQCAwUEBQUEBQUEBQQDBQMFBAUEBQUFBAQFBQQFBAUEBQQFBAQEBQUFAwQEBQMFBAUEBQQFBAQEBAUFBAQFBAUFBQQFBAQFBAUDBQYFBQQGBAUFBAUFBgUEBgUEBQYEBAUFBgMEBAUGBAMFAgUEBQUFAwUFBQQFBAUGBQUFBQUDBgQDBAMFBAUFAgUEBQQFBAUEBAQEAwUEBQUEBAUDBQYEBQUEBQQFBQUEBAUFBAQFBQUFBAQFBAYFBQUGBgUEAwQEBQUGBAYFBQUFBQQFBQMFBAQFBAUFBQQD"
+	.base64	"AwUEBAUFBgQDBAQEBAIFBAQEBAUEBAQEBAUFBAMFBQUFBAUCBAUDBAUDBAUFBAUFAwQEBAUGBAUEBQMFBAUFBQQFBAUEAwMFAwQEBQUEBAQFBQQFBAQDAwUEBAUDBQIEBAUEBAQFBQUFBQQFBAUEBQQFBQQFBQUFBAUFBAUDBAQFBAQFBAUFBQMEAwMEAgMDBQQEBQUEBQUCBQQEBQQEBAQFBQUCBQUFBAUEAQUGBQIFBQQDBAUEBQUEBQYDBAQEBAQFBAQFAwQFBAQDBQUFBAUEBQUGBQQGBQUFBQQFBQUFAwUEBQQEBQUDBAUFBAQEBQQFBAUEBQQEBQQEBQUE"
+	.base64	"BAUFBAUFAwQEBAQEBAUFBQUFBQMEBQYEBQUFBAQFBAUEBAUFBAQFBQQFBQQGBAQFBAUGBQYGBQUEBQIFBQUFBQMEAwQFBQQEAwYGBQUFBQUGBAQFBQQEBQYFBQQFBgUDBAQFBQUGBQYEBQUFBgQEBQQEBAQFBAQFBAUEAwQFBQUFBQUFBAQFBAQFAwUDBAMFBAQFBAUFBQIEBAMEAwQEBQMEBQUEBQQFBAUEBQUFBAUFBQUFBgUEBQYFBAUDBQUEAwQEBAUEBAUEBQYFBAUFBAQFBQUEBQQFAwUF"
+	.zero	3
+	.type	rubik_asm_move_source, @object
+	.size	rubik_asm_move_source, 63
+rubik_asm_move_source:
+	.base64	"AQQCAAMFBg=="
+	.base64	"BAMCAQAFBg=="
+	.base64	"AwACBAEFBg=="
+	.base64	"AAECBAUGAw=="
+	.base64	"AAECBQYDBA=="
+	.base64	"AAECBgMEBQ=="
+	.base64	"AAIFAwEEBg=="
+	.base64	"AAUEAwIBBg=="
+	.base64	"AAQBAwUCBg=="
+	.zero	1
+	.type	rubik_asm_move_twist, @object
+	.size	rubik_asm_move_twist, 63
+rubik_asm_move_twist:
+	.base64	"AQIAAgEAAA=="
+	.base64	"AAAAAAAAAA=="
+	.base64	"AQIAAgEAAA=="
+	.base64	"AAAAAQIBAg=="
+	.base64	"AAAAAAAAAA=="
+	.base64	"AAAAAQIBAg=="
+	.base64	"AAAAAAAAAA=="
+	.base64	"AAAAAAAAAA=="
+	.base64	"AAAAAAAAAA=="
+	.zero	1
+	.type	rubik_asm_sequence_reject3, @object
+	.size	rubik_asm_sequence_reject3, 81
+rubik_asm_sequence_reject3:
+	.zero	37
+	.string	"\002"
+	.zero	25
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	12
+	.zero	3
+	.type	rubik_asm_sequence_reject4, @object
+	.size	rubik_asm_sequence_reject4, 729
+rubik_asm_sequence_reject4:
+	.zero	37
+	.string	"\002"
+	.zero	25
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	49
+	.string	"\007"
+	.zero	25
+	.string	"8"
+	.string	""
+	.string	"\020"
+	.zero	49
+	.string	"\007"
+	.zero	25
+	.string	"8"
+	.string	""
+	.string	"\020"
+	.zero	25
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	46
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	25
+	.string	"?"
+	.string	"\022\022\022"
+	.zero	36
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	4
+	.string	"\022"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	16
+	.string	"\007"
+	.string	""
+	.string	"\002"
+	.zero	46
+	.string	"\020"
+	.string	""
+	.string	"8"
+	.zero	25
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	19
+	.base64	"AgAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAEAAAAAASEhIAPwAAAAAAEAAAEAAAEAAAAAAAAgASEhIAAAAAPwAAEAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAABwAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	.zero	3
+	.type	rubik_asm_move_names, @object
+	.size	rubik_asm_move_names, 36
+rubik_asm_move_names:
+	.word	.LC4
+	.word	.LC5
+	.word	.LC6
+	.word	.LC7
+	.word	.LC8
+	.word	.LC9
+	.word	.LC10
+	.word	.LC11
+	.word	.LC12
+	.type	rubik_asm_sequence_reject5, @object
+	.size	rubik_asm_sequence_reject5, 6561
+rubik_asm_sequence_reject5:
+	.zero	256
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	46
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	25
+	.string	"?"
+	.string	"\022\022\022"
+	.zero	36
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	4
+	.string	"\022"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	16
+	.string	"\007"
+	.string	""
+	.string	"\002"
+	.zero	46
+	.string	"\020"
+	.string	""
+	.string	"8"
+	.zero	25
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	19
+	.string	"\002"
+	.zero	4
+	.string	"\020"
+	.zero	40
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	3
+	.string	"\022\022\022"
+	.string	"?"
+	.zero	4
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	4
+	.string	"\002"
+	.string	"\022\022\022"
+	.zero	3
+	.string	"?"
+	.string	""
+	.string	"\020"
+	.zero	4
+	.string	"\002"
+	.zero	40
+	.string	"\002"
+	.string	""
+	.string	"\007"
+	.zero	19
+	.string	"\002"
+	.zero	4
+	.string	"8"
+	.zero	292
+	.string	"\002"
+	.string	""
+	.string	"\007"
+	.zero	46
+	.string	"8"
+	.string	""
+	.string	"\020"
+	.zero	24
+	.string	"??????"
+	.zero	36
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	4
+	.string	"?"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	16
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	46
+	.string	"8"
+	.string	""
+	.string	"8"
+	.zero	25
+	.string	"\007"
+	.string	""
+	.string	"\002"
+	.zero	19
+	.string	"\007"
+	.zero	4
+	.string	"\020"
+	.zero	40
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.zero	3
+	.string	"??????"
+	.zero	3
+	.string	"\020"
+	.string	""
+	.string	"\020"
+	.string	""
+	.string	"8"
+	.zero	4
+	.string	"\007"
+	.string	"\022?\022"
+	.zero	3
+	.string	"?"
+	.string	""
+	.string	"8"
+	.zero	4
+	.string	"\007"
+	.zero	40
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	19
+	.string	"\007"
+	.zero	4
+	.string	"8"
+	.zero	292
+	.string	"\002"
+	.string	""
+	.string	"\007"
+	.zero	46
+	.string	"8"
+	.string	""
+	.string	"\020"
+	.zero	24
+	.string	"??????"
+	.zero	36
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	4
+	.string	"?"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	16
+	.string	"\007"
+	.string	""
+	.string	"\007"
+	.zero	46
+	.string	"8"
+	.string	""
+	.string	"8"
+	.zero	25
+	.string	"\007"
+	.string	""
+	.string	"\002"
+	.zero	19
+	.base64	"BwAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAEAAAAAA/Pz8/Pz8AAAAAEAAAEAAAOAAAAAAABwASPxIAAAAAPwAAOAAAAAAABwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwAABwAAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHBAQAAAAAAAAAAgQAAAABEAAAAAQA"
+	.base64	"AAAAAAIHIAQAAAAAAAAAEAQBEAAAAAAAAAQAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAAASEhIAAAQAAAAAAAQkAgAAAgAAAAAAPwAAEgAAAAAAAgAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAEAAAAAQAAAAABAAAAAAAAAAAAAAAOAAAEAAAAAAABAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.zero	188
+	.string	"8\004 "
+	.zero	2
+	.string	"\001\002"
+	.string	""
+	.string	"\002 "
+	.zero	4
+	.string	"\002"
+	.string	""
+	.string	" \007\004\004"
+	.zero	5
+	.string	"\001\002"
+	.zero	4
+	.string	"\020\004"
+	.string	""
+	.string	" "
+	.zero	4
+	.string	"\002"
+	.zero	30
+	.base64	"EAAkEAAAAAASEhIAPwAAAAAAEAAAEAAAEAAAAAAAAgASEhIAAAAAPwAAECAAAAAAAgQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAABwAAAAAAACAAIAAAAAAAAAAAAAAAAgAAAAAAOAAAACAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAABAAAAAgAAAAAAOAAAAAAAAAAAAAABAAABAAAAAAAAEAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.zero	20
+	.string	"???"
+	.zero	2
+	.string	"???"
+	.zero	9
+	.string	"?"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"?"
+	.string	""
+	.string	"?"
+	.zero	4
+	.string	"?"
+	.string	""
+	.string	"?"
+	.zero	40
+	.string	"\007"
+	.zero	4
+	.string	"8"
+	.zero	2
+	.string	"\004"
+	.zero	4
+	.string	" "
+	.zero	9
+	.string	"8"
+	.string	""
+	.string	"8"
+	.zero	5
+	.string	"\004"
+	.string	""
+	.string	" "
+	.zero	250
+	.string	" "
+	.base64	"AAQAAAAAPwAAAgAAAAAAAAAAAAAAACAAAAAAAAQAPwAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAOAAAAAASPxIAPwAAAAAAOAAAOAAAEAAAAAAAAgA/Pz8AAAA/Pz8AEAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAABwAAAAABAAABAAAAAAAAAAAAAAAAPwAAAAAAOAABAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.base64	"AAAAAAAAAAABAAAAAAAAAQAAAgAAAAAAOAAAAAAAAAAAAAABAAAAAQAAAAAAEAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAIAAA/Pz8AAAA/Pz8AAAAAAAAAAAAABwAABwAAAAAAPwAAPwAAAAAABwAABwkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAQAAABBwAAAAAAOCABAQcAAAAAAAAQAAABAAAAAAAIOAAAOCAAAAAAAAAICDgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.zero	216
+	.string	"\b"
+	.string	"\b"
+	.zero	5
+	.string	"\007"
+	.string	""
+	.string	"\002"
+	.zero	9
+	.string	"\001"
+	.zero	5
+	.string	"\001"
+	.string	""
+	.string	"\007"
+	.zero	4
+	.base64	"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAOAAAAAASPxIAPwAAAAAAOAkAOAABEAAAAAABAgA/Pz8AAAA/Pz8AEAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAACAAAAAAAAByABBwAAAAAIATgAAAABAAAAAAACAAAAByAAAAABOAAIATgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BCAAAAA4ICAAAiQAAAAIEAAAACIAAAAAABQ4"
+	.base64	"ICA4ICAAAAAAECQIEAAAAAAAACIAABQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkEAAAAAAkAgAAPwAAAAAAEgAAEAAAAAAAAgAAAAAAAAAAAAAAPwASEhIAAAAAACQAACQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAEAAAICAAAAAABAQAAAAAAAAAAAAAOAAAEAAAAAAABCAABAQAAAAAAAA4BCA4BCAAAAAAAiQIAgAAAAAAACIAABQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHIAQ4ICAAAAABEAAA"
+	.base64	"ECQAAAAAACIAACIAAAAAAAAkEAAkEAAAAAAAPwASEhIAAAAAEAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAgAAAAASEhIAPwAAAAAAAiQAAiQAAAAAAAAAAAAAAAAAAAAABwAAAgAAAAAAICAAIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAOAAAAAAABCAABCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.zero	191
+	.string	"\b"
+	.string	"\004"
+	.zero	2
+	.string	"\b"
+	.string	"\004"
+	.string	"\002"
+	.zero	4
+	.string	"?"
+	.zero	9
+	.string	"\b"
+	.string	"\004\b"
+	.string	"\004"
+	.zero	3
+	.string	"\020"
+	.string	""
+	.string	"?"
+	.zero	40
+	.string	"?"
+	.base64	"AAAAAD8AAD8AAAAAAD8AAD8AAAAAAD8AAAAAAAAAAAAAPz8/Pz8/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcAAAAAAD8AAQAgAAAACAAEAAAAAAAAAAAAADgAAD8AAAAAAQAgCAAEAAAAAAAACAAECAAEAAAAAAIAAD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAgCAAEAAAAAD8AABAAAAAAAAAAAAAAAAAAAAAAAD8AAD8AAAAAAD8AEj8SAAAAAD8AAD8AAAAAAAAAAAAAAAAAAAAA"
+	.zero	13
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	3
+	.string	"??????"
+	.zero	3
+	.string	"\002"
+	.string	""
+	.string	"\002"
+	.zero	16
+	.string	"\007"
+	.string	""
+	.string	"?"
+	.zero	3
+	.string	"\001"
+	.string	" \b"
+	.string	"\004"
+	.zero	36
+	.string	"?"
+	.string	""
+	.string	"8"
+	.zero	3
+	.string	"\001"
+	.string	" \001"
+	.string	" "
+	.zero	272
+	.string	"\b\b"
+	.base64	"AAAACAEAAAIAAAAAADgAAAAAAAAAAAAACAEACAEAAAAAABAAADgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAAcAAD8AAAAAAD8AADgJAAAAAAcJCQAACQAAAAAAPz8/Pz8/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACgAAAAAACgAACQcAAAAAADgECAE4AAAAAQgHCgAACgAAAAAACTgAADgEAAAACAg4AQgHAAAAAAAACAgACAgAAAAAAAIAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.base64	"AAAAAAAAAAAAAAAAAQEACAEAAAAAADgAABAAAAAAAAAAAAAAAAAAAAAAADgAADgAAAAAAD8AEj8SAAAAADgJADgJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACQIACQIAAAAAPz8/Pz8/AAAAAAIAAAIAAAAAAAAACgAACgAAAAAACQcAAAcEAAAACAE4AQEHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEQAACgAAAAAAADggCTgAAAAACAg4CAg4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	.zero	189
+	.zero	3
+	.type	rubik_asm_endgame_data, @object
+	.size	rubik_asm_endgame_data, 16384
+rubik_asm_endgame_data:
+	.byte	86,88,0,88,86,83,86,86,81,84,89,85,81,84,84,0
+	.byte	82,81,83,0,0,86,85,0,82,66,0,0,0,0,89,88
+	.byte	0,53,53,83,88,84,38,68,89,0,85,68,0,88,87,0
+	.byte	38,87,85,87,83,89,0,84,89,89,0,87,70,85,89,87
+	.byte	81,89,87,84,87,57,0,86,88,0,87,85,72,89,84,72
+	.byte	89,88,88,87,85,85,81,84,88,82,83,82,81,0,85,0
+	.byte	89,0,87,81,81,81,86,83,85,85,87,0,0,88,88,41
+	.byte	85,89,66,81,73,87,49,71,0,53,86,50,70,88,81,0
+	.byte	88,84,88,83,71,88,0,85,0,0,66,0,89,0,89,0
+	.byte	87,82,88,81,85,0,0,0,82,85,0,69,82,66,87,88
+	.byte	0,84,88,85,86,81,0,82,69,84,81,0,81,82,0,87
+	.byte	86,0,83,81,85,0,81,87,88,84,0,89,57,86,83,0
+	.byte	83,0,89,73,72,82,84,89,73,0,85,0,72,0,0,81
+	.byte	71,86,73,89,82,83,85,0,87,0,0,89,83,0,0,0
+	.byte	86,0,0,83,86,88,0,67,0,82,85,85,86,73,88,0
+	.byte	87,0,0,83,89,85,83,86,0,84,0,68,82,87,88,85
+	.byte	0,0,65,83,89,86,0,89,0,87,83,81,86,73,81,82
+	.byte	88,83,86,83,0,89,85,89,85,84,0,0,85,89,88,82
+	.byte	65,82,0,88,0,83,86,66,0,88,0,57,86,85,84,65
+	.byte	0,0,73,73,85,0,82,0,87,87,0,0,0,82,89,89
+	.byte	0,88,83,0,83,84,88,85,87,89,84,0,0,85,0,89
+	.byte	0,84,85,0,84,84,86,0,0,88,87,85,85,0,81,0
+	.byte	72,0,86,0,81,83,82,88,85,69,85,0,83,0,87,0
+	.byte	71,0,0,0,87,0,0,85,84,85,69,84,0,81,65,88
+	.byte	71,88,85,72,0,73,68,89,84,72,84,86,87,0,84,89
+	.byte	83,55,66,88,87,82,67,0,37,0,83,81,88,0,82,81
+	.byte	82,0,66,0,67,0,89,85,70,88,89,85,0,89,86,72
+	.byte	83,72,0,86,72,88,68,0,89,66,71,81,86,88,85,0
+	.byte	83,0,65,88,81,82,89,81,81,86,84,89,88,0,89,85
+	.byte	81,66,81,83,50,0,89,0,82,0,89,84,81,83,0,89
+	.byte	87,83,70,73,0,0,87,85,84,69,84,86,81,81,89,54
+	.byte	89,0,67,82,0,0,49,82,84,0,0,0,88,84,84,88
+	.byte	0,82,0,0,0,88,0,87,87,0,87,71,89,70,86,0
+	.byte	67,73,71,51,0,0,0,87,0,88,0,0,84,0,85,0
+	.byte	86,86,81,88,87,86,0,84,87,36,85,0,81,87,88,0
+	.byte	87,86,85,0,84,86,83,84,68,86,0,83,83,0,84,83
+	.byte	85,85,0,81,0,0,87,70,84,72,0,84,87,0,73,82
+	.byte	85,70,88,85,71,85,81,65,73,85,65,66,88,0,68,81
+	.byte	0,70,82,0,84,66,82,88,70,87,83,88,82,89,88,84
+	.byte	49,0,86,88,0,0,0,86,88,84,82,85,69,88,82,0
+	.byte	83,85,69,81,84,82,0,82,0,82,85,73,0,0,82,81
+	.byte	73,88,73,89,87,72,81,0,0,0,0,89,0,89,86,0
+	.byte	0,85,0,72,71,85,66,81,87,72,0,0,88,67,82,87
+	.byte	81,88,84,87,69,83,85,0,87,40,85,87,89,0,81,83
+	.byte	82,86,86,81,83,0,88,82,0,72,85,0,88,0,0,89
+	.byte	86,87,72,87,81,0,67,87,0,81,0,85,65,81,87,72
+	.byte	0,86,73,88,87,81,83,85,71,81,82,0,0,0,0,0
+	.byte	0,0,67,86,0,81,55,81,83,82,0,0,87,83,83,81
+	.byte	0,89,82,86,82,85,0,81,84,81,81,0,85,0,0,85
+	.byte	82,86,0,73,88,89,0,0,69,0,66,0,67,89,85,86
+	.byte	88,82,87,86,87,0,0,83,68,85,87,0,89,89,83,0
+	.byte	88,83,89,89,0,0,0,83,89,82,81,83,56,71,68,67
+	.byte	88,0,84,86,0,0,0,83,70,0,0,86,85,0,85,70
+	.byte	81,0,0,86,88,84,81,87,87,86,57,0,0,68,70,88
+	.byte	0,86,85,81,89,50,81,85,84,0,89,0,86,87,84,0
+	.byte	85,84,87,89,0,87,83,70,87,0,56,86,81,85,87,86
+	.byte	85,0,0,0,69,84,0,83,86,81,0,0,88,0,85,88
+	.byte	85,0,0,88,89,81,89,84,84,0,0,0,0,88,84,88
+	.byte	85,89,0,84,88,0,83,57,83,0,0,83,87,88,84,65
+	.byte	0,89,82,87,86,0,71,82,82,88,89,81,87,0,89,65
+	.byte	82,68,89,88,73,84,82,83,73,0,83,0,89,0,89,65
+	.byte	82,0,73,84,72,85,82,0,84,83,0,83,86,68,86,0
+	.byte	0,89,0,82,89,0,85,0,0,50,0,88,0,85,88,0
+	.byte	0,87,88,0,83,0,82,0,71,83,83,88,87,89,85,0
+	.byte	0,84,82,85,85,0,88,89,81,0,89,84,81,87,86,0
+	.byte	87,0,0,81,87,0,86,0,0,86,0,81,88,83,68,83
+	.byte	87,87,73,81,0,89,87,89,83,0,84,84,87,84,89,84
+	.byte	82,89,0,0,0,83,83,83,0,87,0,69,0,0,0,83
+	.byte	84,0,65,0,0,0,82,87,83,85,70,89,85,0,84,81
+	.byte	85,82,83,83,73,81,85,0,87,0,88,73,0,0,83,0
+	.byte	82,86,86,82,0,81,73,89,81,88,88,84,86,88,88,0
+	.byte	82,89,71,85,86,83,83,0,89,0,0,0,86,0,72,85
+	.byte	0,82,67,89,82,84,88,0,89,83,86,88,83,65,83,0
+	.byte	81,0,73,71,87,0,87,0,69,89,34,69,89,82,0,0
+	.byte	87,88,87,0,73,84,0,86,88,87,82,83,72,89,85,86
+	.byte	0,0,0,87,81,0,0,86,0,85,86,86,83,87,69,83
+	.byte	0,82,85,81,82,89,82,84,82,0,88,89,89,67,85,88
+	.byte	81,72,67,0,69,89,86,82,81,86,88,0,82,54,88,0
+	.byte	84,88,84,81,84,73,89,0,85,69,88,84,87,84,69,83
+	.byte	82,87,0,81,65,84,89,0,0,0,89,84,49,86,68,85
+	.byte	84,0,81,83,89,87,49,0,88,0,0,89,88,85,81,0
+	.byte	81,89,88,83,87,0,0,84,68,83,89,84,81,0,87,89
+	.byte	0,84,0,89,85,86,0,0,86,87,85,0,0,85,87,67
+	.byte	66,67,83,84,83,81,52,82,85,83,88,89,0,84,85,86
+	.byte	82,84,0,86,65,0,81,0,84,0,85,0,82,88,86,0
+	.byte	84,68,89,88,84,83,89,85,88,83,87,89,0,86,0,84
+	.byte	0,81,82,89,89,0,83,37,0,0,0,85,0,67,83,73
+	.byte	82,86,83,84,89,0,0,86,81,88,0,87,87,82,70,89
+	.byte	84,0,89,88,0,0,85,0,86,84,0,83,66,89,0,84
+	.byte	83,87,0,84,0,85,35,0,0,81,84,83,82,57,67,0
+	.byte	87,0,88,87,0,68,85,83,85,86,87,88,81,85,87,82
+	.byte	68,0,86,0,69,86,88,87,0,0,86,68,86,0,81,88
+	.byte	89,88,85,0,0,0,87,87,81,86,87,85,65,66,0,0
+	.byte	0,66,71,0,89,81,85,72,0,87,49,89,83,0,87,84
+	.byte	0,0,86,89,81,84,89,81,81,86,87,85,0,70,88,83
+	.byte	89,89,0,86,83,0,0,67,89,85,0,0,85,81,87,87
+	.byte	73,85,66,84,0,87,0,0,82,88,0,0,69,0,87,84
+	.byte	83,88,83,81,83,67,81,86,88,0,83,71,0,87,84,84
+	.byte	89,0,89,0,82,85,86,0,87,0,0,81,89,0,81,0
+	.byte	89,87,83,0,85,68,87,0,65,88,86,73,0,71,86,85
+	.byte	0,87,0,85,0,87,84,89,81,0,82,0,87,81,89,0
+	.byte	0,88,70,68,83,0,85,81,85,67,33,0,69,0,85,89
+	.byte	83,0,89,0,82,89,82,89,84,89,87,0,85,86,86,0
+	.byte	82,85,0,88,85,0,86,86,86,82,0,81,73,86,84,0
+	.byte	70,84,87,0,85,82,83,89,89,87,70,85,82,83,81,85
+	.byte	0,0,83,0,82,87,81,0,86,66,84,82,0,82,54,83
+	.byte	85,0,0,0,69,87,89,73,0,84,83,89,81,67,0,88
+	.byte	88,72,86,88,82,89,0,85,89,0,0,68,86,85,83,0
+	.byte	72,0,84,87,89,0,81,82,67,84,69,84,89,84,0,0
+	.byte	83,83,86,86,82,0,81,83,84,82,0,87,83,82,88,83
+	.byte	73,0,82,0,89,69,87,82,0,0,0,84,88,67,86,85
+	.byte	0,82,0,0,87,88,71,84,0,81,73,0,0,82,73,85
+	.byte	82,0,84,73,82,89,0,85,87,0,70,87,83,86,87,85
+	.byte	82,85,83,0,0,0,69,84,86,0,0,0,84,87,88,81
+	.byte	51,87,84,81,87,0,0,88,0,85,88,69,83,86,82,86
+	.byte	89,85,0,68,0,89,89,84,82,82,86,84,84,0,88,35
+	.byte	69,0,88,0,0,81,0,83,88,89,84,0,83,84,0,85
+	.byte	81,84,66,87,85,69,0,89,81,0,85,39,88,82,70,89
+	.byte	85,71,82,84,0,0,88,86,87,88,87,0,69,84,82,0
+	.byte	85,81,89,71,82,82,0,88,66,82,49,86,0,70,85,0
+	.byte	65,85,0,0,86,85,86,84,68,83,87,0,83,0,81,0
+	.byte	83,85,65,0,86,84,68,0,88,84,86,0,69,83,82,0
+	.byte	86,0,84,86,70,0,85,49,83,0,66,65,73,89,0,87
+	.byte	88,81,70,89,0,89,89,0,83,0,0,82,85,86,86,70
+	.byte	81,84,86,86,84,85,87,86,84,72,89,83,33,0,89,81
+	.byte	85,88,88,82,86,83,0,73,84,88,0,72,82,81,88,0
+	.byte	0,0,87,65,0,82,89,68,0,0,70,88,89,0,81,0
+	.byte	0,87,0,82,88,84,0,89,85,0,82,84,83,0,87,87
+	.byte	81,0,65,89,68,0,67,85,0,87,84,83,0,81,89,67
+	.byte	88,85,0,88,81,83,69,0,89,84,0,82,86,89,81,82
+	.byte	72,84,0,0,72,73,85,83,85,0,87,89,71,82,81,83
+	.byte	88,0,83,0,0,67,81,89,88,87,0,51,87,89,88,83
+	.byte	83,81,68,86,81,0,0,70,84,86,0,87,83,87,0,89
+	.byte	85,0,86,82,84,71,0,86,55,37,84,0,55,88,57,0
+	.byte	87,84,82,87,87,82,86,83,88,0,89,0,89,73,82,0
+	.byte	0,89,0,83,70,89,86,86,0,84,0,87,82,89,0,87
+	.byte	82,87,86,54,85,86,85,86,85,67,0,87,86,73,72,87
+	.byte	89,0,88,85,85,65,88,0,84,0,0,0,0,87,88,83
+	.byte	0,88,85,0,82,85,86,83,86,85,0,85,83,89,85,0
+	.byte	89,82,0,87,69,85,87,82,82,87,88,69,72,88,81,66
+	.byte	84,86,89,86,0,57,0,86,85,0,87,87,0,84,84,82
+	.byte	83,49,84,88,85,0,83,65,0,88,0,84,0,51,82,89
+	.byte	83,0,72,89,86,85,85,0,70,67,88,68,82,88,55,84
+	.byte	0,87,0,88,34,84,87,0,86,81,87,0,81,53,81,0
+	.byte	72,68,87,89,82,70,87,0,89,85,85,0,0,0,84,82
+	.byte	0,83,85,84,85,65,0,83,81,82,81,88,82,0,83,88
+	.byte	82,85,84,88,82,70,85,88,85,53,72,83,86,82,88,0
+	.byte	0,84,0,0,0,81,86,89,0,85,89,82,87,87,87,88
+	.byte	87,86,88,86,0,87,85,84,67,0,83,81,0,0,84,0
+	.byte	84,84,82,83,0,85,0,0,69,0,88,0,88,0,72,0
+	.byte	54,83,65,84,0,0,0,88,71,82,89,82,0,89,81,0
+	.byte	52,86,82,87,86,84,0,0,66,54,81,67,0,82,87,81
+	.byte	85,88,83,0,84,0,0,89,0,66,82,88,81,0,65,0
+	.byte	67,88,81,0,49,69,72,83,81,0,66,0,85,84,86,81
+	.byte	0,89,0,0,88,68,84,69,0,86,81,56,84,84,0,68
+	.byte	65,89,86,85,87,0,82,87,83,0,85,0,83,0,0,82
+	.byte	0,83,0,0,83,81,88,0,0,86,88,54,83,87,0,84
+	.byte	88,83,88,89,87,85,0,86,89,81,81,86,84,0,0,87
+	.byte	87,88,57,0,85,0,85,89,81,82,71,85,83,82,84,89
+	.byte	89,0,82,87,81,82,83,33,89,83,0,0,71,84,0,83
+	.byte	82,85,82,84,85,0,71,89,84,83,67,71,82,84,84,73
+	.byte	82,89,86,89,89,82,85,83,86,0,70,0,88,73,86,0
+	.byte	0,72,84,85,0,83,85,0,89,85,0,89,88,81,87,65
+	.byte	84,85,87,87,81,86,73,83,0,83,82,0,86,68,0,89
+	.byte	0,81,0,65,0,84,82,87,81,85,81,0,85,82,0,66
+	.byte	85,86,83,89,87,0,84,83,88,83,81,66,73,83,54,82
+	.byte	84,66,89,89,0,81,87,84,0,88,87,82,0,83,81,65
+	.byte	83,86,86,0,82,88,89,86,81,88,86,87,85,89,85,0
+	.byte	71,88,0,89,0,82,85,87,87,0,0,68,0,82,84,84
+	.byte	88,82,87,88,0,70,88,83,86,86,82,87,82,0,69,71
+	.byte	83,0,82,84,89,81,0,73,83,88,0,84,88,89,81,73
+	.byte	0,84,88,88,72,84,53,73,87,84,82,84,0,82,88,54
+	.byte	0,89,68,68,0,68,72,82,0,55,82,69,89,0,81,81
+	.byte	84,89,84,86,71,0,82,0,0,86,0,85,82,81,67,85
+	.byte	68,0,86,0,88,0,86,81,86,89,85,89,82,68,84,0
+	.byte	0,81,82,81,88,82,53,67,86,85,0,83,0,87,84,86
+	.byte	82,89,0,86,86,89,82,0,86,81,0,0,86,0,68,83
+	.byte	84,83,89,67,85,0,0,88,0,70,84,0,69,0,87,0
+	.byte	0,89,67,87,87,0,83,87,81,88,89,85,68,86,50,85
+	.byte	0,0,88,68,69,86,83,0,0,84,71,86,72,87,87,89
+	.byte	87,0,0,0,86,89,82,82,86,89,85,88,0,84,87,88
+	.byte	84,65,49,84,84,85,82,88,87,0,84,0,83,85,82,86
+	.byte	84,84,0,87,0,87,82,0,82,81,86,0,89,0,87,0
+	.byte	86,85,0,0,0,88,0,85,65,87,0,85,83,81,55,0
+	.byte	84,65,0,88,88,81,83,88,89,0,0,0,85,87,82,81
+	.byte	71,71,85,85,0,84,69,88,89,86,69,83,82,81,0,82
+	.byte	87,86,85,84,81,89,86,86,56,51,0,83,85,0,83,86
+	.byte	67,83,67,0,0,0,84,84,82,68,0,86,87,84,0,88
+	.byte	89,84,57,0,81,88,85,82,70,83,0,49,0,82,88,65
+	.byte	0,0,84,86,81,85,0,85,86,88,84,87,0,0,84,0
+	.byte	0,86,88,0,87,65,69,82,88,86,83,0,89,86,0,89
+	.byte	82,88,84,81,0,81,81,88,85,83,66,67,84,84,82,89
+	.byte	87,0,0,89,67,0,0,84,0,0,84,68,81,70,86,0
+	.byte	81,83,88,0,87,86,85,0,0,87,84,0,86,50,89,89
+	.byte	89,86,0,83,87,86,84,0,88,85,0,82,89,88,0,86
+	.byte	0,0,88,85,73,0,0,86,82,85,86,72,85,81,88,85
+	.byte	89,0,0,87,0,84,81,86,87,88,81,84,0,86,0,0
+	.byte	70,0,0,0,0,0,0,83,0,86,73,0,83,89,89,87
+	.byte	85,0,88,89,84,86,81,66,81,88,71,86,84,81,84,0
+	.byte	87,86,84,83,67,55,82,84,88,82,89,65,81,84,73,84
+	.byte	0,81,88,0,84,88,0,89,89,83,70,82,85,83,87,82
+	.byte	84,66,0,56,85,86,81,0,82,81,66,83,86,88,81,83
+	.byte	86,67,84,85,86,89,83,88,84,72,89,0,82,0,70,0
+	.byte	89,0,0,84,81,84,82,81,86,88,89,83,89,69,85,84
+	.byte	86,0,0,88,67,89,66,87,66,86,0,72,82,0,89,69
+	.byte	86,82,0,0,89,84,83,88,83,0,82,83,0,53,0,70
+	.byte	0,83,87,0,86,84,84,86,89,0,0,83,85,89,70,85
+	.byte	88,0,85,0,83,85,85,82,86,87,0,0,0,0,0,81
+	.byte	67,88,67,72,85,89,0,68,0,89,0,84,0,81,0,87
+	.byte	81,0,0,89,86,86,0,87,0,83,82,84,88,0,86,0
+	.byte	87,81,66,88,0,81,0,66,82,84,69,85,0,0,89,73
+	.byte	85,88,83,85,86,81,85,89,85,0,83,85,83,84,83,82
+	.byte	89,88,81,81,81,84,0,0,85,89,83,85,89,73,84,87
+	.byte	84,0,84,0,82,0,68,0,87,82,84,85,0,82,89,88
+	.byte	85,0,87,88,84,0,0,66,81,89,67,86,0,0,0,88
+	.byte	83,85,84,86,0,69,0,83,51,88,0,85,0,87,0,84
+	.byte	87,81,89,71,73,85,0,87,89,0,86,0,88,87,87,86
+	.byte	87,70,0,88,81,83,0,0,89,89,0,81,85,0,86,84
+	.byte	89,87,81,70,85,85,0,0,86,89,69,83,0,65,88,85
+	.byte	81,0,0,87,69,0,89,68,0,81,85,0,0,0,68,0
+	.byte	89,66,81,69,83,87,81,70,86,82,85,81,0,82,83,88
+	.byte	86,87,85,0,88,85,81,0,84,0,82,0,85,67,82,0
+	.byte	82,68,88,89,84,87,73,81,88,0,81,87,81,83,0,86
+	.byte	0,85,87,89,0,86,84,0,0,88,0,82,85,73,0,87
+	.byte	87,85,0,83,88,83,81,86,85,0,0,72,0,0,88,84
+	.byte	88,89,84,87,0,87,88,84,83,84,0,0,0,0,56,0
+	.byte	83,81,65,0,81,0,81,85,0,86,0,82,0,0,83,0
+	.byte	85,86,86,0,87,68,87,0,85,0,86,81,0,0,82,85
+	.byte	83,87,0,0,82,0,85,0,0,86,0,84,0,0,0,72
+	.byte	87,0,84,70,0,83,86,89,0,84,0,68,81,72,86,86
+	.byte	52,86,84,87,85,82,57,82,0,84,83,82,0,89,82,0
+	.byte	0,81,82,84,85,89,88,0,0,81,89,81,85,86,0,84
+	.byte	85,83,87,0,84,0,84,87,73,85,84,0,66,66,86,67
+	.byte	87,86,81,83,86,87,85,81,82,0,87,81,82,86,87,69
+	.byte	89,82,88,89,0,0,0,81,81,86,89,83,88,83,85,0
+	.byte	83,89,89,85,87,0,89,68,0,86,86,0,0,0,85,51
+	.byte	84,81,0,0,0,71,86,81,0,87,0,0,0,88,83,82
+	.byte	73,88,88,0,85,0,83,65,66,81,55,81,81,0,71,85
+	.byte	89,0,86,82,84,81,88,0,84,71,0,0,81,86,67,0
+	.byte	81,84,49,72,85,0,0,86,0,81,89,0,85,89,82,83
+	.byte	89,83,84,0,81,86,0,81,0,0,81,68,88,56,68,36
+	.byte	0,88,86,85,89,85,83,85,84,69,82,81,88,67,84,86
+	.byte	89,0,89,67,0,0,84,65,85,85,0,87,0,83,88,85
+	.byte	52,82,0,65,81,86,89,83,86,0,81,81,86,84,82,0
+	.byte	83,84,84,73,84,85,84,88,0,88,0,0,85,87,0,85
+	.byte	85,68,89,0,68,0,81,87,86,0,88,0,0,0,73,89
+	.byte	66,0,86,81,65,86,84,84,70,0,82,88,81,87,87,83
+	.byte	88,83,84,85,0,82,0,82,82,70,66,85,73,84,56,83
+	.byte	69,0,88,83,0,70,0,81,0,81,0,84,84,84,81,85
+	.byte	71,82,41,88,70,50,0,85,72,81,71,0,0,65,72,84
+	.byte	0,81,86,0,82,0,85,0,73,66,83,0,88,71,55,0
+	.byte	86,68,86,84,85,85,51,84,0,84,82,81,82,0,0,86
+	.byte	88,65,51,0,88,87,0,83,0,83,85,89,69,85,88,83
+	.byte	83,83,87,88,89,81,0,82,83,0,85,65,85,88,89,88
+	.byte	82,0,50,89,84,81,0,86,81,70,66,84,83,83,88,0
+	.byte	86,89,82,87,82,66,0,81,87,0,0,0,84,82,83,84
+	.byte	0,81,83,82,84,89,86,84,0,85,83,0,84,83,0,89
+	.byte	82,83,0,83,0,81,0,82,84,85,0,86,85,86,88,89
+	.byte	0,83,85,81,0,86,87,89,89,84,0,88,84,0,0,84
+	.byte	82,84,83,81,0,86,87,83,52,89,0,0,0,87,0,83
+	.byte	87,87,0,0,83,87,82,85,84,82,87,83,82,72,84,66
+	.byte	88,0,0,89,71,81,54,70,84,87,87,86,68,86,87,81
+	.byte	88,83,0,86,87,84,66,88,87,85,0,0,49,67,71,84
+	.byte	85,82,82,0,82,0,0,65,0,81,82,0,89,87,89,89
+	.byte	65,69,87,84,88,0,0,88,82,0,0,0,89,86,87,81
+	.byte	65,82,89,68,72,87,0,73,86,83,85,85,0,84,86,69
+	.byte	0,0,72,68,86,66,82,88,66,0,83,87,0,0,0,0
+	.byte	88,87,70,82,85,0,87,83,86,0,81,83,66,81,81,0
+	.byte	86,67,88,82,73,87,0,82,66,85,81,84,87,88,84,72
+	.byte	0,88,89,85,0,81,65,67,0,71,85,0,82,89,0,65
+	.byte	0,89,0,67,72,84,88,0,68,81,57,73,0,0,73,87
+	.byte	87,86,52,0,69,0,87,0,0,85,87,85,0,0,0,87
+	.byte	85,84,87,82,86,86,85,85,83,0,0,84,0,86,83,0
+	.byte	71,67,0,0,87,65,0,82,81,84,86,86,51,68,87,86
+	.byte	84,84,82,72,0,70,85,87,0,86,35,0,84,86,0,84
+	.byte	0,82,88,0,88,82,0,89,0,81,84,0,84,89,73,66
+	.byte	86,52,87,88,88,0,82,89,85,88,82,65,83,82,85,86
+	.byte	68,69,86,81,86,83,0,84,87,0,89,82,69,83,88,81
+	.byte	0,70,83,69,85,82,0,70,66,0,0,73,82,85,84,87
+	.byte	85,89,83,85,0,83,84,0,89,81,85,0,89,50,81,87
+	.byte	84,0,88,81,82,81,81,85,81,0,0,71,65,82,86,0
+	.byte	73,0,83,81,0,65,0,0,86,88,0,89,82,89,82,65
+	.byte	87,87,82,66,87,0,0,0,85,89,0,0,0,85,83,73
+	.byte	0,85,86,86,87,85,86,87,0,65,84,0,83,0,67,69
+	.byte	81,88,88,0,88,87,83,81,87,89,40,86,86,0,89,81
+	.byte	85,68,84,72,84,89,0,0,89,84,89,84,0,86,0,65
+	.byte	81,89,66,82,89,0,66,86,88,52,0,66,70,0,81,84
+	.byte	88,88,85,85,70,71,0,89,0,66,50,88,85,85,81,70
+	.byte	82,88,69,89,83,88,87,86,81,85,0,82,0,82,82,86
+	.byte	81,85,0,68,0,0,0,86,83,85,86,0,82,88,85,86
+	.byte	83,85,0,51,82,83,83,84,82,81,0,66,84,88,82,67
+	.byte	82,81,0,0,69,0,0,0,0,82,0,82,84,87,0,84
+	.byte	0,81,55,82,83,83,89,87,87,0,81,0,89,86,83,84
+	.byte	84,83,83,67,0,0,0,85,86,55,0,89,0,0,88,87
+	.byte	82,53,85,87,84,86,0,0,83,68,88,72,0,86,0,85
+	.byte	81,0,0,81,69,81,82,0,0,88,49,0,67,89,0,0
+	.byte	83,81,0,87,89,85,85,83,88,0,82,0,0,72,0,0
+	.byte	69,65,85,82,0,82,89,83,0,83,83,82,0,87,85,81
+	.byte	86,88,86,0,85,86,81,81,85,85,85,87,0,68,73,86
+	.byte	82,88,0,88,87,0,87,88,0,86,66,89,89,0,84,66
+	.byte	71,82,67,82,86,0,87,87,88,84,85,88,84,82,87,73
+	.byte	67,0,0,83,86,0,85,86,83,0,73,0,88,0,0,0
+	.byte	73,88,85,88,89,85,87,81,0,81,82,82,82,68,0,85
+	.byte	71,82,86,86,71,0,84,0,83,0,84,82,84,0,88,0
+	.byte	88,0,87,70,0,66,85,82,0,0,88,0,81,56,51,85
+	.byte	82,85,69,66,84,85,89,86,82,84,81,89,81,82,85,82
+	.byte	87,68,82,86,0,84,85,0,0,0,73,0,83,71,87,66
+	.byte	0,87,82,87,87,50,83,70,83,83,81,81,82,0,83,0
+	.byte	67,0,84,84,0,81,84,66,84,85,81,0,87,0,89,0
+	.byte	82,89,0,83,88,0,0,89,89,83,83,67,81,83,0,88
+	.byte	84,0,0,84,85,81,82,65,81,88,87,81,84,0,89,85
+	.byte	65,84,0,86,83,0,41,81,0,65,0,89,0,81,87,66
+	.byte	0,86,68,86,81,0,86,89,0,67,0,81,83,89,0,0
+	.byte	0,0,83,68,70,88,89,86,87,86,0,72,0,81,88,84
+	.byte	67,85,0,84,88,87,84,0,85,0,88,82,88,82,0,83
+	.byte	0,86,0,0,0,89,89,83,88,0,86,0,86,81,0,89
+	.byte	55,88,82,71,0,83,86,0,0,83,85,86,88,81,82,87
+	.byte	89,0,86,56,84,0,85,81,82,66,81,66,0,0,0,67
+	.byte	0,0,82,81,81,81,86,81,88,69,88,0,0,0,0,87
+	.byte	82,85,82,0,0,87,0,0,88,0,0,89,89,88,83,0
+	.byte	72,89,87,83,0,83,81,84,81,84,82,83,84,85,86,0
+	.byte	87,81,0,66,86,0,81,0,88,83,86,86,86,0,0,67
+	.byte	86,86,0,71,0,89,0,0,70,81,84,84,87,84,84,84
+	.byte	86,86,82,82,82,81,86,87,83,72,71,89,88,0,83,71
+	.byte	82,83,81,0,89,83,81,89,81,84,0,84,84,84,82,83
+	.byte	88,0,54,89,84,0,0,84,81,0,0,0,68,0,0,88
+	.byte	83,88,0,0,86,84,81,86,84,88,84,0,71,87,81,81
+	.byte	73,0,83,0,87,88,84,0,81,0,87,86,86,81,87,84
+	.byte	0,88,81,84,72,85,85,0,72,83,0,72,81,0,0,73
+	.byte	84,0,69,81,87,88,0,0,51,85,86,81,0,87,84,85
+	.byte	0,88,89,81,86,83,72,0,68,0,0,88,85,0,83,67
+	.byte	86,82,0,82,0,84,72,0,0,69,81,87,83,0,84,85
+	.byte	81,86,83,88,87,68,88,68,88,84,49,81,84,0,0,87
+	.byte	85,83,81,49,87,0,83,82,0,54,0,65,71,86,83,0
+	.byte	0,0,0,69,86,81,0,86,86,85,88,86,89,38,87,70
+	.byte	89,0,82,88,72,83,86,0,82,85,81,69,0,87,71,72
+	.byte	85,0,82,0,65,69,82,86,0,0,87,0,70,0,65,65
+	.byte	84,72,89,87,88,0,85,83,0,85,82,0,87,85,88,0
+	.byte	81,86,88,88,0,0,83,81,0,86,88,0,0,84,0,0
+	.byte	82,83,87,81,84,0,87,83,83,82,88,0,85,0,82,70
+	.byte	72,69,69,83,83,72,89,67,84,0,0,83,81,89,73,87
+	.byte	0,84,86,86,87,86,0,0,0,87,88,65,81,69,72,0
+	.byte	86,0,88,83,83,0,71,88,68,88,0,68,0,81,0,85
+	.byte	83,87,57,85,0,0,87,85,84,85,70,86,71,0,0,70
+	.byte	85,84,0,84,84,83,87,88,88,85,83,87,84,87,0,0
+	.byte	87,83,86,88,0,84,0,0,85,72,0,67,85,83,82,85
+	.byte	0,87,86,85,84,87,89,0,0,69,66,87,81,87,57,86
+	.byte	0,86,70,0,0,83,86,87,0,85,82,83,82,86,87,0
+	.byte	84,85,89,86,67,0,84,0,0,83,89,85,54,0,81,86
+	.byte	85,0,34,0,89,85,0,82,87,88,65,83,83,0,21,86
+	.byte	89,0,81,72,87,88,0,0,65,82,0,87,0,73,89,68
+	.byte	0,84,0,87,89,57,82,81,56,81,83,0,0,0,68,83
+	.byte	0,88,82,66,87,81,81,87,87,89,84,0,56,0,87,86
+	.byte	85,84,82,0,83,86,0,86,81,72,49,88,84,88,0,87
+	.byte	72,0,85,0,86,0,86,89,66,0,84,82,0,85,86,0
+	.byte	0,0,88,87,87,67,82,85,82,85,84,85,89,82,84,88
+	.byte	81,89,86,0,89,65,82,89,0,81,83,87,89,73,66,0
+	.byte	0,86,83,88,0,81,86,82,0,87,85,0,0,0,89,0
+	.byte	88,0,82,83,88,71,84,0,0,82,0,71,72,84,81,82
+	.byte	86,0,0,0,81,0,81,71,88,83,89,83,88,89,83,88
+	.byte	81,73,67,86,0,71,86,0,86,84,87,57,81,87,84,86
+	.byte	81,82,73,73,0,87,81,87,83,88,0,83,0,84,83,52
+	.byte	0,87,81,85,71,83,0,88,84,86,67,81,0,81,82,65
+	.byte	83,0,0,81,81,85,71,84,0,69,86,84,86,83,0,86
+	.byte	0,88,84,72,82,89,82,0,52,84,0,67,0,0,69,86
+	.byte	86,81,86,89,71,84,0,84,0,87,66,81,0,72,0,84
+	.byte	0,81,0,0,0,86,87,83,0,84,85,0,83,0,84,81
+	.byte	0,83,85,0,81,87,84,0,86,65,81,84,0,87,0,0
+	.byte	0,88,0,88,88,0,82,81,83,84,86,85,65,0,89,0
+	.byte	71,88,89,85,83,86,67,85,71,83,87,86,83,83,89,87
+	.byte	87,71,0,89,82,87,65,86,72,0,82,83,67,85,86,0
+	.byte	85,84,89,81,87,85,0,83,85,83,81,84,84,0,0,73
+	.byte	0,86,0,0,86,89,85,67,87,0,81,88,82,0,83,0
+	.byte	84,66,81,86,0,87,84,88,57,0,82,86,81,87,82,0
+	.byte	67,83,87,0,85,0,88,70,89,86,84,82,86,86,0,88
+	.byte	83,86,83,84,88,70,88,0,89,0,85,83,87,70,84,88
+	.byte	81,83,68,81,84,0,71,0,84,87,81,89,85,81,0,67
+	.byte	0,0,82,81,67,0,0,86,84,68,0,87,88,70,67,0
+	.byte	0,82,0,0,87,0,83,85,89,55,0,67,89,83,81,70
+	.byte	0,87,87,66,66,88,89,87,0,87,52,0,83,84,82,82
+	.byte	89,81,81,39,0,0,86,81,82,89,84,82,70,84,0,87
+	.byte	81,83,70,0,0,83,83,0,88,89,86,0,0,0,0,81
+	.byte	86,81,89,83,0,87,72,81,87,85,0,51,65,0,81,0
+	.byte	88,83,87,85,88,85,89,72,86,84,86,83,70,0,56,0
+	.byte	83,85,82,89,89,0,0,82,0,84,83,82,0,85,86,86
+	.byte	86,89,85,89,0,86,85,84,0,0,82,0,81,82,70,0
+	.byte	33,71,86,82,84,89,68,85,84,81,0,51,0,81,81,83
+	.byte	68,0,89,0,85,88,0,88,73,81,82,86,0,84,68,0
+	.byte	88,68,86,87,81,84,0,84,86,83,0,83,81,81,83,89
+	.byte	83,0,87,81,81,73,65,0,83,85,88,87,36,85,73,70
+	.byte	88,85,85,0,83,54,0,82,83,85,0,86,85,88,0,0
+	.byte	89,0,82,66,0,83,0,89,89,86,82,68,88,82,0,0
+	.byte	87,82,85,87,84,71,83,87,0,81,88,0,81,86,89,83
+	.byte	72,50,0,81,83,87,86,84,0,87,0,0,0,0,83,86
+	.byte	67,82,83,81,85,89,87,65,0,87,88,0,81,0,85,0
+	.byte	81,86,84,0,0,86,72,86,86,0,83,54,85,87,0,81
+	.byte	71,73,0,88,0,81,82,73,87,54,89,89,86,82,89,0
+	.byte	89,0,88,0,83,88,87,0,83,82,0,0,0,81,82,83
+	.byte	85,88,84,81,86,86,89,89,0,66,85,69,65,83,54,89
+	.byte	0,89,87,69,85,88,70,0,81,89,86,0,0,85,0,81
+	.byte	0,83,89,86,0,0,71,81,0,85,88,85,0,86,84,0
+	.byte	82,89,70,0,82,84,82,73,89,0,81,0,0,81,88,87
+	.byte	83,81,88,0,89,85,0,86,85,82,68,88,85,81,85,85
+	.byte	84,85,0,0,0,85,89,81,87,83,0,0,88,0,0,84
+	.byte	0,83,81,87,82,69,50,85,89,87,0,0,86,83,89,0
+	.byte	86,87,87,0,71,84,83,66,89,88,83,0,0,55,0,85
+	.byte	0,65,84,88,83,89,86,83,87,82,87,86,0,83,83,81
+	.byte	81,81,0,70,86,0,81,82,86,55,85,0,0,84,83,89
+	.byte	66,0,71,89,68,88,82,0,0,86,0,0,87,0,88,66
+	.byte	0,89,88,81,89,82,70,83,89,89,82,86,0,87,85,82
+	.byte	89,0,89,0,0,84,57,87,86,84,0,82,84,0,0,85
+	.byte	82,82,0,82,82,84,0,89,81,83,54,0,85,88,83,88
+	.byte	87,84,81,82,81,85,0,86,67,0,0,84,84,89,83,73
+	.byte	84,69,0,0,85,0,70,83,0,82,81,73,66,0,69,82
+	.byte	84,0,86,72,85,82,0,73,72,0,82,85,0,83,71,89
+	.byte	0,86,89,66,89,84,73,81,82,86,66,68,85,84,0,84
+	.byte	86,84,0,88,81,89,89,85,69,87,82,82,87,83,71,73
+	.byte	83,70,81,0,0,85,0,84,87,85,88,89,0,84,67,69
+	.byte	84,89,0,0,81,82,89,81,87,0,82,72,0,86,87,0
+	.byte	0,88,40,81,85,70,66,85,0,84,81,0,0,84,65,88
+	.byte	0,72,89,81,85,87,72,0,81,89,0,89,86,70,87,89
+	.byte	87,84,84,89,70,0,0,88,73,73,87,0,83,0,89,71
+	.byte	83,0,83,84,0,83,86,82,68,68,0,85,85,0,84,84
+	.byte	89,85,0,0,83,0,83,88,71,88,0,82,88,0,86,0
+	.byte	83,0,0,0,85,66,0,54,85,82,89,67,83,87,81,0
+	.byte	88,82,89,83,0,0,87,88,85,0,82,88,83,86,87,82
+	.byte	85,0,87,72,88,0,65,0,0,68,86,84,83,84,85,0
+	.byte	89,87,84,0,88,86,82,0,83,84,86,73,88,85,89,66
+	.byte	0,81,53,57,84,0,0,0,86,65,53,0,84,89,82,87
+	.byte	0,88,84,0,82,82,85,86,71,0,84,0,81,84,0,86
+	.byte	67,0,85,0,83,89,89,0,88,88,88,86,86,55,82,89
+	.byte	83,84,86,66,84,81,0,82,89,0,87,82,82,69,0,83
+	.byte	85,87,88,0,88,86,0,0,84,82,0,84,0,65,82,83
+	.byte	84,82,87,0,81,82,0,89,87,86,0,0,65,19,0,66
+	.byte	71,84,83,0,0,0,69,0,0,87,68,83,85,85,85,89
+	.byte	0,0,86,88,86,65,0,0,86,84,0,67,85,86,0,81
+	.byte	0,88,83,85,83,84,65,87,67,85,67,0,81,0,82,0
+	.byte	86,81,65,86,81,0,85,88,0,0,86,85,86,0,0,0
+	.byte	0,88,66,0,87,87,68,0,81,0,87,84,0,0,87,81
+	.byte	0,81,82,84,89,85,0,87,87,81,84,88,85,88,88,88
+	.byte	88,73,84,84,83,0,89,89,85,0,84,89,65,0,87,0
+	.byte	89,84,88,87,87,0,70,82,85,85,85,89,0,84,73,86
+	.byte	81,0,0,88,87,88,82,87,86,82,81,89,88,0,83,85
+	.byte	54,88,82,87,0,81,89,86,0,41,82,89,71,56,82,85
+	.byte	81,71,0,72,89,85,87,0,89,81,0,89,81,83,86,86
+	.byte	82,81,83,0,0,86,72,89,0,72,89,82,88,86,81,86
+	.byte	0,54,83,0,85,0,0,89,81,84,85,0,87,82,89,85
+	.byte	0,85,82,0,85,84,86,83,86,83,81,85,88,0,89,0
+	.byte	81,66,84,0,83,83,87,0,65,0,0,0,84,85,85,81
+	.byte	82,87,0,0,71,88,82,0,66,89,0,67,89,0,0,89
+	.byte	34,83,83,86,81,85,0,88,88,83,86,89,88,83,82,73
+	.byte	86,0,56,84,0,88,84,0,0,87,86,86,89,84,0,66
+	.byte	82,0,82,0,88,81,84,89,72,65,83,81,82,82,0,82
+	.byte	88,87,84,86,67,84,0,88,0,84,88,83,89,81,88,81
+	.byte	0,83,0,87,88,82,0,0,0,81,83,82,0,86,87,0
+	.byte	83,82,83,0,84,84,0,82,71,81,89,86,89,81,0,87
+	.byte	0,73,86,84,82,86,0,85,87,0,82,0,86,0,86,83
+	.byte	81,85,84,81,0,86,68,66,0,0,87,88,85,81,89,89
+	.byte	85,85,89,89,0,84,85,68,0,0,88,85,0,84,87,87
+	.byte	81,83,0,89,0,87,0,81,0,87,86,81,0,88,89,67
+	.byte	83,66,83,83,89,0,86,0,65,0,85,83,85,81,86,87
+	.byte	88,0,86,71,69,83,87,0,83,81,0,0,87,51,0,87
+	.byte	86,0,82,0,67,0,67,65,85,87,81,84,66,0,82,0
+	.byte	67,85,88,85,84,0,85,0,0,83,83,83,88,66,83,0
+	.byte	84,87,83,66,87,65,0,82,83,0,83,83,65,88,83,0
+	.byte	85,69,88,83,84,0,83,0,81,0,85,81,89,81,86,87
+	.byte	84,0,87,87,89,89,67,81,85,85,82,82,84,81,81,86
+	.byte	89,83,89,83,88,0,89,87,86,83,87,85,82,0,86,0
+	.byte	81,85,0,0,87,57,86,88,72,84,86,86,0,82,87,86
+	.byte	69,53,71,71,0,86,66,89,84,0,86,84,88,85,70,0
+	.byte	0,0,83,84,52,69,0,84,81,69,0,81,84,88,54,82
+	.byte	82,88,0,0,0,0,0,0,82,88,87,88,85,81,73,85
+	.byte	0,89,83,68,82,0,87,0,87,82,81,89,85,0,89,86
+	.byte	85,83,82,86,89,82,68,89,72,0,88,81,81,49,83,69
+	.byte	0,83,86,86,70,87,84,89,88,83,0,87,86,0,88,84
+	.byte	81,89,88,82,33,81,87,66,0,84,84,0,0,0,86,89
+	.byte	88,84,84,51,89,65,0,66,67,85,0,82,0,65,89,85
+	.byte	0,0,70,0,87,81,67,0,81,81,0,82,86,0,82,83
+	.byte	81,0,0,67,71,84,86,0,0,89,81,0,67,0,89,81
+	.byte	0,82,0,88,67,0,81,0,82,73,87,89,86,0,0,85
+	.byte	88,83,85,0,53,83,56,85,86,88,84,54,65,56,87,81
+	.byte	73,82,73,71,87,88,70,86,84,0,0,89,82,84,85,88
+	.byte	89,70,83,82,84,87,52,81,0,85,50,85,0,89,84,86
+	.byte	71,81,55,84,0,65,0,83,82,72,85,81,0,82,86,88
+	.byte	85,87,0,73,89,84,83,82,88,0,86,70,0,0,89,87
+	.byte	87,70,81,87,65,71,89,84,54,86,72,70,87,0,65,86
+	.byte	84,86,81,83,81,82,85,89,85,69,81,0,0,0,0,83
+	.byte	0,67,73,88,53,67,0,81,84,85,87,88,0,0,89,89
+	.byte	82,0,84,83,84,86,52,84,85,83,87,39,55,87,83,84
+	.byte	88,0,88,89,82,88,88,83,89,70,81,70,81,86,0,89
+	.byte	89,85,72,81,86,89,0,83,84,81,0,0,88,87,84,0
+	.byte	83,0,65,70,0,84,88,0,82,68,88,83,71,82,84,71
+	.byte	86,0,89,0,81,81,82,86,82,73,85,73,0,0,85,87
+	.byte	81,0,89,72,67,83,81,0,84,83,88,86,87,85,65,82
+	.byte	0,0,84,0,0,0,84,89,89,86,67,87,0,83,73,84
+	.byte	0,82,66,82,0,88,82,87,84,84,0,0,88,82,83,85
+	.byte	85,88,82,67,84,0,72,0,82,88,68,81,82,0,84,0
+	.byte	85,0,0,0,85,70,83,0,89,0,88,86,85,0,0,88
+	.byte	88,71,0,85,85,56,81,82,65,88,88,0,55,86,84,86
+	.byte	0,87,67,88,88,87,87,84,83,0,0,0,0,81,88,85
+	.byte	87,0,0,86,0,89,89,89,86,89,0,84,85,67,88,86
+	.byte	81,67,81,86,89,82,49,81,82,83,83,67,81,89,0,86
+	.byte	84,0,84,89,85,82,67,0,83,83,0,0,0,87,0,0
+	.byte	83,70,82,0,73,87,68,0,0,83,88,0,83,89,81,85
+	.byte	85,88,0,85,87,84,89,89,89,50,88,82,84,88,87,88
+	.byte	86,66,89,0,88,88,87,85,66,82,89,83,89,81,83,67
+	.byte	0,0,88,81,68,88,0,0,83,86,52,89,83,86,0,71
+	.byte	73,51,0,85,67,0,89,0,89,83,83,87,81,87,55,89
+	.byte	72,0,82,87,89,0,89,89,85,82,0,53,87,0,88,0
+	.byte	82,81,89,87,0,87,83,88,89,0,81,0,0,81,0,71
+	.byte	83,81,84,0,0,70,53,0,0,87,0,81,88,54,82,0
+	.byte	0,69,81,85,83,0,0,82,84,0,73,88,83,0,34,0
+	.byte	88,81,88,73,83,82,0,88,0,86,0,86,89,84,81,89
+	.byte	0,88,87,82,0,85,82,88,73,72,0,0,0,83,84,0
+	.byte	82,84,83,89,65,86,89,0,88,88,83,84,83,70,81,65
+	.byte	82,53,88,83,83,82,0,81,88,81,71,0,85,0,84,82
+	.byte	85,87,87,0,83,81,85,83,88,0,85,0,66,0,85,85
+	.byte	84,52,0,89,89,0,0,83,83,71,83,83,0,83,82,0
+	.byte	89,87,0,0,88,0,83,0,85,84,0,83,86,83,82,83
+	.byte	83,81,0,82,0,71,65,83,0,52,88,86,83,65,82,81
+	.byte	81,83,0,83,0,0,87,84,82,0,0,66,82,83,0,89
+	.byte	87,50,0,86,67,88,81,0,83,70,89,0,82,81,71,0
+	.byte	66,65,88,85,84,85,83,88,65,84,0,87,86,0,0,0
+	.byte	85,86,87,83,53,82,88,84,67,82,83,82,67,65,65,0
+	.byte	84,84,69,86,81,67,84,85,0,85,52,86,87,89,85,89
+	.byte	87,81,0,83,89,0,0,84,0,86,67,70,86,82,88,88
+	.byte	83,82,86,0,67,0,71,86,0,87,87,85,87,82,87,65
+	.byte	88,83,69,84,0,85,82,87,89,81,0,0,89,87,0,0
+	.byte	85,89,83,85,81,83,88,83,89,81,0,83,84,83,81,84
+	.byte	83,0,82,68,89,85,86,86,83,88,0,86,88,81,86,83
+	.byte	72,89,66,86,81,89,83,0,88,82,83,0,88,83,88,0
+	.byte	86,88,0,0,87,0,89,0,0,88,86,85,83,87,0,70
+	.byte	0,0,0,0,65,0,86,0,85,0,82,86,87,84,85,84
+	.byte	67,0,81,85,82,82,0,84,0,0,84,0,0,0,0,0
+	.byte	88,88,81,0,85,86,82,0,57,81,0,89,0,0,87,84
+	.byte	68,0,50,88,71,89,0,83,86,0,89,83,65,0,0,0
+	.byte	0,84,0,81,73,81,84,85,86,84,89,87,86,83,83,82
+	.byte	88,0,86,84,0,65,89,0,83,82,88,0,0,70,65,66
+	.byte	88,68,83,83,85,83,89,72,81,0,84,86,65,87,82,0
+	.byte	85,88,0,84,84,84,0,72,85,0,0,0,0,88,0,88
+	.byte	86,89,88,89,83,0,0,85,87,65,83,81,0,84,87,86
+	.byte	89,86,66,89,0,0,55,73,0,67,85,82,89,68,82,89
+	.byte	88,82,0,82,0,89,86,66,83,81,0,67,82,0,89,88
+	.byte	0,72,85,82,71,71,52,0,81,88,0,84,0,88,87,89
+	.byte	88,82,86,0,85,88,83,83,0,0,89,81,0,0,87,85
+	.byte	88,81,88,81,83,57,86,87,85,71,89,87,67,88,81,0
+	.byte	89,85,0,86,83,67,84,0,0,83,84,81,85,82,88,82
+	.byte	83,0,83,87,71,0,89,87,81,85,85,72,85,0,0,83
+	.byte	66,73,88,89,84,81,86,89,52,54,0,0,0,84,0,86
+	.byte	81,89,70,86,69,0,0,81,70,82,88,0,84,89,85,81
+	.byte	81,83,82,0,82,83,0,81,89,71,55,87,82,66,85,0
+	.byte	89,81,82,82,0,82,84,0,82,73,0,0,87,89,0,81
+	.byte	86,0,83,87,0,81,0,89,84,0,89,82,86,0,73,87
+	.byte	72,87,89,0,86,88,0,89,86,82,81,85,55,88,82,86
+	.byte	0,86,0,86,85,83,85,84,89,0,0,0,56,84,0,84
+	.byte	0,0,71,82,84,88,83,82,65,87,0,0,0,0,70,86
+	.byte	81,82,0,0,88,0,81,0,0,82,81,84,0,84,88,72
+	.byte	0,83,0,84,0,0,88,89,0,69,88,71,0,0,85,66
+	.byte	0,87,84,86,82,84,82,85,0,0,71,0,81,82,81,89
+	.byte	0,82,0,85,85,71,0,82,89,81,88,82,89,0,0,89
+	.byte	82,86,81,55,81,86,0,86,89,85,0,83,83,0,0,0
+	.byte	81,81,85,55,89,84,81,0,67,66,83,0,69,84,87,85
+	.byte	85,70,85,0,81,65,88,86,89,70,0,68,85,87,85,82
+	.byte	87,0,89,0,0,82,0,82,0,0,0,89,0,89,0,89
+	.byte	0,85,0,87,0,85,85,0,83,85,69,87,81,85,0,0
+	.byte	81,0,87,66,82,82,83,0,88,81,0,87,86,0,67,87
+	.byte	0,89,86,70,81,89,81,82,87,0,70,86,0,0,0,0
+	.byte	86,83,65,56,81,86,0,85,0,69,66,88,0,89,89,70
+	.byte	86,68,0,65,65,86,68,85,84,86,0,81,83,89,67,0
+	.byte	0,68,89,73,0,87,88,51,87,86,0,0,81,0,81,88
+	.byte	67,87,82,0,81,83,87,0,83,88,87,89,81,0,73,0
+	.byte	88,0,86,84,81,85,87,85,69,87,81,81,0,0,0,88
+	.byte	0,0,81,0,84,86,0,89,0,0,0,67,0,84,0,89
+	.byte	81,86,0,88,82,0,71,0,0,87,82,82,0,87,71,83
+	.byte	87,83,81,89,82,72,83,0,72,0,84,81,67,86,87,83
+	.byte	85,65,86,89,84,87,82,81,89,84,87,72,89,83,82,73
+	.byte	82,85,54,87,69,82,81,85,0,83,81,86,84,87,83,71
+	.byte	0,81,87,86,71,81,0,88,84,81,81,81,71,0,68,84
+	.byte	69,85,0,0,86,87,83,84,0,84,0,0,85,86,0,0
+	.byte	0,81,0,0,81,0,88,0,82,0,84,0,0,89,81,0
+	.byte	51,0,0,89,87,68,0,86,0,0,86,86,83,83,81,87
+	.byte	85,83,85,0,88,0,82,70,0,82,0,0,81,84,0,0
+	.byte	87,49,84,83,86,82,81,0,87,89,87,87,69,85,71,85
+	.byte	0,87,0,89,86,67,89,85,87,0,87,82,0,0,73,89
+	.byte	86,0,86,0,0,81,0,89,85,88,82,82,86,87,81,84
+	.byte	87,87,88,83,0,72,81,87,0,85,86,83,88,82,85,0
+	.byte	88,87,68,81,0,0,88,82,86,89,0,67,81,84,82,0
+	.byte	24,89,88,81,83,85,82,0,70,83,0,0,83,89,69,82
+	.byte	84,0,72,83,88,86,83,89,85,85,88,71,89,73,86,0
+	.byte	65,86,83,0,72,81,0,72,0,81,0,0,56,81,81,0
+	.byte	82,89,81,84,57,0,81,0,89,71,0,89,68,88,85,88
+	.byte	85,82,0,81,81,88,0,84,84,81,89,84,86,86,70,82
+	.byte	85,85,88,83,81,71,67,86,87,0,87,83,70,0,84,0
+	.byte	54,36,84,84,85,82,69,87,0,0,0,65,0,84,85,0
+	.byte	85,0,84,88,0,89,0,87,88,0,88,0,81,84,83,83
+	.byte	68,0,87,84,82,81,0,87,69,88,0,89,81,84,84,86
+	.byte	85,82,84,73,83,89,82,85,84,87,0,0,81,86,73,0
+	.byte	70,82,0,85,0,88,0,68,87,83,89,82,0,0,0,88
+	.byte	0,83,84,67,84,84,88,84,0,0,71,0,86,81,72,88
+	.byte	84,89,81,89,87,81,86,0,0,84,87,68,82,72,83,0
+	.byte	87,82,88,0,88,82,84,85,88,88,82,84,0,86,0,0
+	.byte	0,83,0,84,0,83,88,86,55,88,70,82,0,0,0,82
+	.byte	71,87,82,0,88,86,81,85,89,83,81,87,0,0,88,84
+	.byte	81,82,88,82,88,81,81,67,84,52,0,71,0,84,0,81
+	.byte	88,0,81,82,57,89,0,83,82,87,81,0,0,0,0,82
+	.byte	71,82,68,84,83,0,83,0,81,89,0,81,89,85,82,82
+	.byte	0,87,86,88,84,81,67,0,86,0,82,88,84,85,70,82
+	.byte	84,0,84,85,87,0,84,0,89,85,81,81,83,53,85,87
+	.byte	0,84,65,86,0,0,82,0,87,83,70,88,0,0,81,83
+	.byte	81,0,0,83,0,89,89,70,84,85,73,85,0,84,85,84
+	.byte	88,68,83,84,86,0,0,86,0,87,82,0,83,88,87,89
+	.byte	84,85,0,86,88,0,87,88,86,87,84,84,82,71,72,83
+	.byte	88,89,81,88,84,84,84,85,0,83,0,0,87,0,68,0
+	.byte	0,65,0,0,81,0,0,87,88,82,83,82,85,89,87,0
+	.byte	86,0,0,83,86,0,81,83,0,0,82,0,82,86,84,0
+	.byte	88,89,0,0,83,0,86,0,0,81,82,83,82,0,73,89
+	.byte	0,86,56,0,82,0,87,81,81,84,88,86,88,85,56,0
+	.byte	0,83,87,89,68,68,85,84,86,69,83,0,87,87,66,86
+	.byte	89,83,0,83,0,89,88,0,65,82,88,86,0,68,49,85
+	.byte	83,0,84,36,85,85,87,88,72,73,83,0,0,56,0,84
+	.byte	86,87,83,84,0,83,82,65,0,84,88,0,87,89,81,83
+	.byte	88,66,88,86,0,0,81,82,86,0,88,89,88,82,68,88
+	.byte	0,85,85,68,81,87,0,82,0,87,81,0,89,87,0,0
+	.byte	0,81,50,89,84,0,55,84,70,82,57,87,0,0,0,87
+	.byte	84,82,84,84,86,85,89,87,86,0,66,87,84,0,89,0
+	.byte	84,85,0,83,86,87,88,88,0,87,0,0,0,0,0,89
+	.byte	82,0,0,0,66,87,86,86,0,85,87,83,89,81,0,0
+	.byte	84,87,68,66,0,87,88,89,89,0,0,88,72,87,0,65
+	.byte	0,0,86,83,73,85,0,88,88,0,68,81,88,73,82,0
+	.byte	0,81,0,84,87,84,87,81,82,86,0,87,0,83,88,0
+	.byte	87,83,86,0,67,0,88,0,82,81,0,65,84,0,88,84
+	.byte	86,87,83,83,73,81,0,0,83,0,0,89,86,0,85,0
+	.byte	67,72,0,83,69,88,82,87,85,83,89,0,84,89,0,87
+	.byte	85,0,0,0,0,83,88,83,0,0,87,0,85,0,84,0
+	.byte	37,82,69,85,87,88,87,87,0,0,0,89,87,87,89,85
+	.byte	88,81,82,87,82,0,81,0,83,87,81,0,87,87,0,0
+	.byte	83,89,0,84,83,82,86,0,81,71,0,85,88,87,0,82
+	.byte	81,67,88,82,84,85,87,70,89,87,0,66,0,0,83,85
+	.byte	81,81,88,84,84,0,0,89,0,72,0,82,82,84,0,55
+	.byte	0,0,89,0,0,0,0,0,82,84,0,0,0,0,0,84
+	.byte	89,89,0,0,88,89,82,83,89,0,0,87,0,86,67,0
+	.byte	83,82,88,85,82,0,0,0,82,83,51,82,88,88,82,87
+	.byte	89,85,86,88,84,83,83,69,83,0,82,69,87,86,66,81
+	.byte	83,87,71,85,71,0,0,0,84,88,87,86,84,66,69,40
+	.byte	82,69,84,82,84,0,51,81,71,0,0,85,0,89,84,88
+	.byte	87,88,88,56,88,83,0,81,89,0,0,84,25,0,83,87
+	.byte	89,82,88,87,0,0,82,82,88,89,82,88,85,0,0,0
+	.byte	66,86,83,87,0,86,84,81,84,86,83,70,85,52,85,0
+	.byte	83,83,86,0,0,0,85,0,83,0,87,66,71,83,67,85
+	.byte	70,0,81,68,70,82,88,85,89,0,86,0,81,82,87,49
+	.byte	82,0,0,0,81,86,89,86,88,71,85,0,0,73,83,87
+	.byte	83,84,83,71,89,85,0,89,0,81,82,0,87,66,0,82
+	.byte	65,71,86,88,85,72,88,81,83,83,87,0,0,0,87,0
+	.byte	0,87,0,81,83,86,86,85,85,0,84,69,89,0,88,67
+	.byte	84,0,89,85,83,84,87,0,86,84,0,87,87,89,0,0
+	.byte	0,84,71,0,0,66,88,0,82,82,87,0,68,88,84,89
+	.byte	84,82,0,68,56,89,0,69,88,0,0,84,88,81,88,81
+	.byte	86,70,0,87,71,85,69,85,0,89,0,0,83,86,87,84
+	.byte	83,83,0,0,85,0,86,83,0,87,82,69,67,0,72,83
+	.byte	84,71,86,83,83,81,0,0,0,82,0,0,0,87,0,85
+	.byte	0,71,0,68,68,85,86,85,85,0,0,0,89,82,0,85
+	.byte	68,82,87,86,89,0,81,0,81,85,82,84,81,82,86,84
+	.byte	83,0,86,65,81,82,82,81,88,81,0,84,82,70,0,50
+	.byte	72,0,0,87,0,86,82,88,0,86,86,84,0,0,83,84
+	.byte	0,0,65,0,89,81,0,88,81,81,83,87,85,65,83,87
+	.byte	0,0,82,82,0,85,0,83,0,0,0,66,89,82,0,87
+	.byte	0,0,85,84,84,84,0,84,88,82,86,85,73,84,89,86
+	.byte	0,81,0,81,0,82,89,86,83,70,89,87,82,81,0,0
+	.byte	72,0,82,82,0,84,89,84,85,67,89,87,85,81,87,87
+	.byte	0,82,82,88,84,86,0,83,0,69,89,0,66,86,0,85
+	.byte	84,85,81,83,82,0,85,0,86,54,87,87,82,0,81,0
+	.byte	0,66,84,88,0,56,83,81,85,84,0,0,89,84,0,65
+	.byte	89,72,66,86,0,66,88,0,82,87,67,88,83,84,0,84
+	.byte	84,0,83,83,87,84,0,82,82,0,49,0,65,0,88,86
+	.byte	81,49,89,88,83,0,86,86,73,87,88,0,85,84,82,67
+	.byte	86,89,81,89,71,84,82,88,0,72,0,0,0,88,81,82
+	.byte	87,0,0,84,52,88,0,83,67,0,84,0,85,0,81,86
+	.byte	87,0,81,81,87,81,0,86,83,0,0,73,89,85,68,81
+	.byte	0,82,83,89,0,83,84,73,88,82,83,87,81,84,0,81
+	.byte	86,68,0,88,0,86,87,81,83,83,0,88,86,84,83,88
+	.byte	81,84,69,85,88,89,84,86,0,89,89,50,84,0,87,0
+	.byte	86,71,0,86,87,87,73,0,83,82,67,81,83,69,88,67
+	.byte	72,84,87,83,89,84,89,81,86,70,86,89,87,0,0,82
+	.byte	86,88,86,69,89,0,0,69,86,81,82,87,86,89,0,0
+	.byte	86,85,0,85,81,0,65,89,84,88,66,89,83,89,84,86
+	.byte	69,88,84,88,0,82,89,0,56,0,85,0,0,89,85,85
+	.byte	84,87,87,0,66,81,0,0,81,0,85,0,87,84,0,81
+	.byte	53,0,85,0,86,0,86,85,69,86,0,87,86,0,85,87
+	.byte	81,86,86,88,87,89,85,86,0,88,82,0,88,0,86,0
+	.byte	0,81,83,0,87,87,87,81,81,66,0,0,89,87,87,0
+	.byte	65,84,89,85,86,87,87,0,0,0,83,86,87,81,82,0
+	.byte	88,88,68,85,89,0,89,0,67,81,0,0,71,72,88,81
+	.byte	85,82,81,81,84,84,82,83,86,87,0,88,69,69,87,82
+	.byte	84,82,0,87,69,72,83,86,86,86,81,83,82,83,83,81
+	.byte	0,87,0,0,87,84,0,0,81,83,87,87,0,72,89,65
+	.byte	82,0,0,85,88,83,50,82,0,87,70,86,85,68,88,82
+	.byte	86,86,0,0,0,86,0,0,72,87,82,81,86,87,0,85
+	.byte	0,0,81,88,83,88,86,83,81,84,81,84,86,68,0,86
+	.byte	0,89,88,0,0,84,85,86,0,88,89,89,82,87,0,67
+	.byte	0,0,0,0,0,82,55,0,84,68,0,81,86,0,83,68
+	.byte	85,0,86,73,82,0,89,89,85,87,85,0,84,73,84,86
+	.byte	89,0,83,88,84,89,89,85,0,88,87,87,81,82,72,81
+	.byte	0,86,85,87,73,0,85,0,88,0,87,69,87,84,86,88
+	.byte	0,67,0,81,73,82,0,84,85,84,84,89,88,83,87,0
+	.byte	88,81,0,83,89,88,52,85,82,65,87,88,0,0,0,82
+	.byte	88,84,85,83,83,88,38,0,89,87,0,83,87,86,83,83
+	.byte	81,85,72,0,67,85,86,83,67,82,72,0,65,83,68,84
+	.byte	84,72,84,84,0,85,87,0,89,81,86,86,89,0,88,84
+	.byte	86,86,89,89,84,89,88,87,0,0,89,89,68,83,81,66
+	.byte	0,68,84,0,87,83,65,84,51,86,0,0,65,84,86,88
+	.byte	87,85,84,86,0,81,87,81,69,0,85,0,88,84,83,69
+	.byte	85,86,67,0,68,88,84,87,84,89,0,86,82,0,67,86
+	.byte	73,85,88,84,89,88,81,86,70,86,0,86,81,0,81,57
+	.byte	84,66,71,0,70,82,68,82,89,84,0,84,0,88,83,53
+	.byte	87,89,68,84,82,87,82,0,81,57,86,0,81,81,86,55
+	.byte	81,72,0,0,88,81,84,82,89,89,0,88,89,0,83,57
+	.byte	88,81,86,82,85,89,84,87,82,84,0,82,71,0,68,86
+	.byte	0,82,0,85,84,83,84,82,0,0,0,82,87,0,89,86
+	.byte	88,0,89,0,85,0,82,88,84,87,82,83,73,69,0,0
+	.byte	89,0,83,88,70,0,65,88,89,0,65,87,87,87,88,0
+	.byte	81,83,0,0,82,89,85,82,82,70,0,0,87,66,0,88
+	.byte	0,83,69,84,81,67,0,69,0,81,84,85,83,83,0,85
+	.byte	0,0,0,65,87,81,0,88,89,86,86,89,88,0,0,87
+	.byte	88,83,85,84,85,65,84,70,86,84,86,84,83,0,88,87
+	.byte	71,83,0,70,89,0,88,0,86,82,0,71,0,81,0,86
+	.byte	66,72,82,0,85,83,73,85,89,89,89,81,0,82,87,87
+	.byte	83,71,81,83,0,83,89,84,84,0,0,84,87,82,85,81
+	.byte	85,0,82,88,0,89,89,0,0,82,0,0,81,88,87,89
+	.byte	87,65,65,86,86,70,81,68,82,0,85,82,84,0,72,84
+	.byte	84,88,84,86,84,0,0,86,86,85,0,0,89,89,0,83
+	.byte	85,89,71,81,69,83,82,65,0,86,84,82,88,0,86,0
+	.byte	73,86,65,85,88,0,66,84,83,87,0,66,0,0,86,87
+	.byte	82,70,89,0,88,83,84,87,83,87,84,87,83,82,85,0
+	.byte	89,72,83,0,67,84,0,69,85,0,73,0,87,0,83,0
+	.byte	86,89,85,0,89,81,0,86,82,0,89,88,84,71,87,85
+	.byte	88,0,89,86,83,70,84,89,66,84,0,0,89,87,88,84
+	.byte	84,88,87,84,84,0,73,86,82,89,86,0,81,88,0,81
+	.byte	86,87,86,84,88,69,89,81,87,0,86,0,84,0,85,88
+	.byte	0,83,82,0,86,0,85,86,0,0,81,0,0,0,82,82
+	.byte	0,85,0,82,0,88,72,89,82,85,73,68,0,85,82,83
+	.byte	82,73,53,72,81,0,0,83,86,67,82,89,83,87,81,83
+	.byte	0,89,81,40,81,84,70,89,73,0,84,0,87,82,71,84
+	.byte	81,85,73,85,85,54,68,88,0,88,0,0,0,86,81,0
+	.byte	85,0,88,82,84,72,0,86,0,0,82,0,70,0,88,0
+	.byte	83,71,81,70,85,73,85,87,84,84,89,0,81,0,87,0
+	.byte	73,73,88,83,0,0,89,0,0,89,81,0,83,67,0,85
+	.byte	0,87,83,89,83,0,85,68,81,87,88,69,81,82,69,0
+	.byte	83,86,85,0,81,87,86,87,68,0,87,70,0,86,82,70
+	.byte	55,81,0,71,68,87,71,89,87,88,88,89,86,87,86,87
+	.byte	66,84,82,87,0,86,0,84,81,88,81,84,85,0,84,81
+	.byte	86,0,0,0,85,89,85,53,85,0,82,83,81,84,86,0
+	.byte	51,88,89,86,83,71,83,89,0,86,0,88,0,83,87,86
+	.byte	0,82,0,82,88,81,83,83,81,0,87,87,82,89,0,69
+	.byte	85,68,69,0,73,89,87,85,84,88,0,85,87,81,88,86
+	.byte	88,0,87,89,85,0,89,88,81,89,69,84,49,0,84,89
+	.byte	88,69,0,83,83,84,87,83,88,0,0,81,84,83,84,87
+	.byte	84,89,87,67,82,71,81,0,82,0,82,86,0,88,81,88
+	.byte	81,0,88,0,0,86,65,84,86,0,0,0,0,87,87,83
+	.byte	86,0,86,69,0,0,0,67,84,0,85,83,86,87,86,88
+	.byte	0,0,83,89,0,0,82,0,68,87,86,0,87,0,82,0
+	.byte	54,0,86,0,84,0,0,83,88,69,88,87,82,83,82,85
+	.byte	0,86,89,82,86,88,81,18,0,86,87,82,86,0,83,0
+	.byte	88,73,65,0,73,86,81,86,0,87,84,86,89,73,85,0
+	.byte	82,67,82,0,88,0,65,87,0,83,83,86,0,89,82,0
+	.byte	86,0,0,65,68,82,0,88,0,69,87,89,72,0,84,66
+	.byte	81,81,65,0,81,89,81,0,85,87,89,84,0,0,86,82
+	.byte	86,81,82,83,84,0,89,0,0,0,0,82,84,83,0,86
+	.byte	0,0,83,65,86,87,83,83,89,84,88,0,0,85,87,0
+	.byte	83,56,82,88,89,88,73,84,87,0,85,88,0,87,85,87
+	.byte	81,0,85,81,89,68,81,89,83,81,84,0,0,87,85,88
+	.byte	0,84,82,87,87,53,87,83,0,81,0,87,82,0,50,72
+	.byte	0,82,82,81,72,88,0,89,0,0,85,0,67,0,81,0
+	.byte	88,0,83,87,89,85,84,0,88,83,81,83,72,87,81,83
+	.byte	81,52,81,73,83,83,22,85,68,89,0,87,82,85,0,82
+	.byte	0,83,83,81,89,0,0,88,69,0,81,73,0,82,69,82
+	.byte	84,67,0,81,87,65,83,85,73,73,66,84,65,0,87,81
+	.byte	88,81,0,82,82,81,88,83,85,69,0,0,0,85,66,0
+	.byte	88,0,0,86,82,85,86,81,0,84,89,0,71,81,0,83
+	.byte	81,0,82,89,0,84,88,0,0,87,0,87,85,83,0,0
+	.byte	0,82,0,0,0,71,88,85,81,87,86,82,81,0,0,86
+	.byte	0,84,85,0,0,0,83,82,0,83,84,65,88,72,82,70
+	.byte	81,89,0,0,86,83,86,86,83,0,86,0,86,82,86,68
+	.byte	65,83,89,0,86,83,87,0,33,0,0,87,0,0,73,82
+	.byte	85,0,84,83,0,81,87,83,0,83,81,86,0,0,83,87
+	.byte	0,0,0,86,81,83,88,86,85,50,65,0,0,88,87,0
+	.byte	0,66,89,82,89,0,82,82,82,89,86,83,85,84,0,65
+	.byte	82,88,85,83,82,81,84,0,89,81,81,83,87,0,88,89
+	.byte	85,0,0,0,68,0,85,84,0,88,89,0,84,82,87,85
+	.byte	0,0,89,0,65,85,0,81,86,88,70,86,86,89,68,0
+	.byte	87,0,0,81,83,52,0,86,0,0,0,87,81,84,0,49
+	.byte	34,86,0,0,89,88,0,84,0,0,84,83,87,0,0,84
+	.byte	82,89,0,0,70,82,83,84,0,0,89,82,82,72,88,0
+	.byte	0,83,0,0,66,83,87,0,86,0,0,0,89,0,88,86
+	.byte	83,81,81,66,85,87,0,0,86,0,82,82,0,83,81,71
+	.byte	0,85,86,50,83,65,73,89,89,50,83,84,88,87,83,0
+	.byte	84,0,71,81,84,69,83,0,0,87,71,83,0,0,85,86
+	.byte	84,84,67,83,86,82,89,71,86,89,89,0,83,51,85,0
+	.byte	0,88,0,83,87,89,84,81,0,81,82,84,81,72,0,86
+	.byte	0,86,51,0,0,86,81,87,70,0,85,89,83,89,88,87
+	.byte	82,89,85,73,83,87,89,85,83,84,68,84,0,67,83,85
+	.byte	88,69,0,0,83,0,0,0,83,72,67,88,65,81,70,0
+	.byte	82,81,81,0,53,0,0,0,0,0,82,86,82,0,83,88
+	.byte	88,82,0,0,85,73,86,51,88,82,70,83,0,82,88,0
+	.byte	84,0,0,0,0,81,88,81,83,83,85,89,0,87,0,82
+	.byte	89,0,84,0,0,0,83,85,85,73,84,85,83,87,81,81
+	.byte	82,84,52,81,86,86,71,0,82,0,87,0,0,0,0,0
+	.byte	87,0,85,88,72,82,66,0,89,0,0,0,85,82,83,88
+	.byte	0,52,81,82,0,83,89,89,57,86,0,0,89,70,89,0
+	.byte	81,0,81,81,88,82,86,87,85,0,84,84,88,85,88,84
+	.byte	69,85,85,87,83,69,87,0,83,0,84,82,86,66,82,0
+	.byte	83,89,0,89,84,68,81,84,88,84,68,85,83,87,87,0
+	.byte	89,86,70,0,0,82,88,85,0,0,89,82,84,0,52,0
+	.byte	81,83,82,83,0,88,68,87,66,70,87,88,57,72,81,72
+	.byte	86,86,86,83,0,66,0,86,81,85,89,72,85,83,87,87
+	.byte	83,0,0,0,67,89,0,0,89,86,72,87,0,89,0,88
+	.byte	54,0,55,89,0,0,82,0,82,88,0,89,67,81,0,81
+	.byte	86,67,86,70,86,87,0,0,85,84,85,0,0,86,0,0
+	.byte	81,0,81,0,86,83,83,83,89,72,69,84,81,87,83,84
+	.byte	0,0,0,83,89,88,81,83,89,73,81,0,85,55,73,87
+	.byte	89,0,86,69,83,83,83,86,71,89,86,89,82,71,82,86
+	.byte	83,0,87,81,89,65,88,68,83,85,86,0,57,84,87,0
+	.byte	88,82,85,86,0,83,85,87,0,83,88,0,85,66,0,83
+	.byte	0,89,87,88,81,51,87,70,0,0,84,83,81,83,84,0
+	.byte	73,81,88,89,87,0,68,67,87,0,0,86,89,0,0,86
+	.byte	87,81,87,85,88,0,89,0,82,0,0,36,0,84,67,0
+	.byte	53,0,83,85,66,89,0,89,84,71,88,86,89,87,86,81
+	.byte	81,0,86,87,72,0,81,85,0,83,85,0,86,87,85,0
+	.byte	82,0,81,87,83,56,86,0,66,89,87,72,81,0,0,88
+	.byte	70,87,84,70,85,0,0,81,88,84,89,81,70,81,88,81
+	.byte	0,83,82,82,0,73,0,81,0,86,84,0,82,84,88,88
+	.byte	0,89,86,82,87,88,89,35,81,0,82,84,87,83,67,86
+	.byte	0,83,72,86,0,82,83,85,0,0,0,89,82,0,0,81
+	.byte	84,84,87,83,81,68,89,84,88,0,87,0,0,0,86,0
+	.byte	0,72,0,89,52,0,0,0,81,81,88,81,69,66,82,57
+	.byte	88,0,82,89,0,85,81,85,0,67,88,68,0,0,81,67
+	.byte	82,81,0,82,87,73,88,0,0,82,86,0,82,81,67,65
+	.byte	85,82,86,81,83,84,82,82,68,73,0,88,0,85,67,87
+	.byte	88,85,89,88,0,87,65,70,69,85,52,87,88,71,0,86
+	.byte	87,86,88,82,83,0,0,86,82,87,81,81,0,89,86,85
+	.byte	68,86,86,83,86,85,88,82,0,88,51,82,71,0,83,0
+	.byte	0,89,88,83,70,87,0,0,86,69,87,83,85,85,84,88
+	.byte	0,86,88,82,85,89,0,73,85,83,86,85,0,0,86,0
+	.byte	85,81,87,0,89,88,82,85,85,0,0,82,84,87,0,85
+	.byte	0,84,83,83,86,83,88,89,67,67,88,89,85,73,82,84
+	.byte	81,85,81,0,86,87,66,67,88,0,84,87,65,0,85,83
+	.byte	0,87,85,85,0,70,86,67,85,0,82,0,89,82,0,0
+	.byte	81,0,49,65,85,81,65,86,73,70,88,86,86,82,0,71
+	.byte	0,81,71,84,87,82,81,84,0,85,87,81,87,84,72,83
+	.byte	82,23,0,52,89,86,81,86,88,84,88,85,87,87,81,0
+	.byte	88,85,81,0,86,0,84,88,0,81,0,85,85,0,85,84
+	.byte	81,0,83,81,85,87,87,87,83,72,84,0,0,0,86,0
+	.byte	71,86,89,51,85,0,0,72,81,87,0,81,0,85,86,0
+	.byte	82,0,86,86,0,89,82,54,56,85,53,69,0,87,0,0
+	.byte	71,82,0,81,35,0,86,81,86,81,83,69,0,0,0,85
+	.byte	70,86,89,0,86,0,86,66,86,88,81,89,82,87,81,0
+	.byte	0,0,81,85,84,86,0,89,83,81,73,0,86,0,84,84
+	.byte	88,73,0,85,83,88,81,0,0,65,0,87,83,87,0,51
+	.byte	83,87,84,0,86,0,70,66,89,0,0,88,0,0,87,0
+	.byte	65,81,83,87,0,0,68,81,86,89,83,86,70,89,65,0
+	.byte	86,88,86,85,88,0,0,81,86,81,0,0,0,0,83,66
+	.byte	0,81,0,87,83,0,83,89,50,85,84,0,82,82,84,84
+	.byte	0,0,82,86,0,89,86,0,86,86,0,87,0,83,66,71
+	.byte	0,86,85,83,84,81,81,0,57,50,85,0,81,50,0,83
+	.byte	84,84,82,0,81,88,0,85,82,81,86,70,84,87,85,87
+	.byte	0,65,86,66,87,85,0,84,65,83,0,81,0,86,81,88
+	.byte	83,84,70,65,84,51,88,89,89,0,88,67,0,37,88,0
+	.byte	85,70,70,73,89,89,88,0,88,0,82,0,0,89,89,83
+	.byte	85,0,66,88,86,88,87,85,0,86,85,82,87,67,0,0
+	.byte	83,84,72,0,81,85,0,65,0,89,89,69,0,85,83,82
+	.byte	81,0,85,65,88,84,0,83,81,88,0,85,85,86,66,81
+	.byte	0,81,0,0,0,82,0,71,81,71,88,84,88,0,20,81
+	.byte	88,0,84,87,84,67,0,88,83,0,88,0,0,87,0,69
+	.byte	65,88,50,83,82,0,81,85,89,0,71,67,82,86,0,88
+	.byte	0,0,71,85,82,50,83,86,0,0,89,72,89,83,81,70
+	.byte	89,81,0,84,85,0,81,89,0,87,88,82,70,89,0,65
+	.byte	0,87,0,0,82,0,0,0,87,0,83,82,81,0,69,0
+	.byte	0,0,86,86,84,83,85,89,87,84,83,72,39,65,87,85
+	.byte	0,83,0,0,81,89,85,0,72,0,0,84,0,84,87,0
+	.byte	89,87,89,83,84,66,0,73,82,87,70,0,86,85,85,68
+	.byte	82,89,84,89,86,81,72,71,81,84,81,69,87,0,84,83
+	.byte	85,0,65,71,0,82,0,83,87,89,66,0,81,85,69,0
+	.byte	72,81,0,81,81,0,0,67,84,0,81,88,83,0,0,88
+	.byte	82,85,0,87,87,83,87,85,82,89,86,69,81,89,0,83
+	.byte	53,69,0,81,83,86,0,0,69,85,0,88,88,84,0,86
+	.byte	0,83,0,82,0,49,87,89,81,84,89,66,0,85,83,82
+	.byte	84,86,49,89,88,67,85,88,81,0,73,84,65,0,87,82
+	.byte	84,88,82,69,86,82,67,86,0,72,88,50,89,0,88,86
+	.byte	89,86,0,86,87,89,81,0,0,0,66,0,0,84,67,84
+	.byte	82,89,85,83,88,0,89,83,89,0,87,0,84,0,0,86
+	.byte	88,84,71,83,0,69,83,81,0,68,86,0,88,83,73,88
+	.byte	82,0,89,0,89,0,83,0,0,87,66,84,85,0,87,82
+	.byte	73,82,89,0,68,83,84,83,88,82,84,89,83,89,86,81
+	.byte	0,89,86,0,0,84,70,82,0,84,0,0,88,88,89,88
+	.byte	83,87,67,86,82,68,86,53,0,55,82,81,81,85,81,83
+	.byte	85,84,82,86,86,83,83,83,83,89,0,0,81,0,82,0
+	.byte	0,83,0,0,0,83,82,82,87,84,55,0,87,89,65,88
+	.byte	69,0,71,81,81,70,87,89,81,89,70,70,0,73,84,81
+	.byte	86,89,84,0,66,86,0,68,0,89,0,0,72,82,0,66
+	.byte	68,88,84,66,88,0,81,87,88,81,83,72,86,89,88,82
+	.byte	68,84,86,0,81,0,0,83,0,89,85,85,51,87,86,0
+	.byte	54,0,88,0,84,0,81,88,86,0,84,70,68,89,82,84
+	.byte	73,83,85,86,89,68,87,85,83,38,85,0,51,0,0,84
+	.byte	0,71,86,88,0,89,88,86,84,83,89,87,81,88,81,85
+	.byte	85,86,0,83,0,83,89,66,87,83,81,82,82,89,89,82
+	.byte	73,71,0,84,73,0,89,0,88,0,88,0,82,81,0,0
+	.byte	85,88,70,82,0,84,82,88,85,0,67,83,70,83,88,85
+	.byte	0,87,82,0,83,89,83,89,88,82,0,86,86,0,0,87
+	.byte	0,82,83,84,87,84,0,84,85,88,87,0,86,85,82,81
+	.byte	83,81,86,0,84,83,86,83,0,81,0,0,89,88,0,0
+	.byte	87,87,82,85,67,71,81,82,0,84,84,0,89,81,0,70
+	.byte	0,87,83,87,88,0,0,0,82,87,85,0,88,0,69,85
+	.byte	88,87,84,89,0,82,85,81,85,0,86,0,82,0,67,0
+	.byte	65,0,0,0,81,83,85,73,0,84,81,82,0,84,0,0
+	.byte	84,69,68,88,87,84,87,86,0,82,86,70,85,89,0,89
+	.byte	81,81,0,88,53,85,86,86,89,0,71,83,70,0,65,84
+	.byte	0,84,0,53,0,69,72,87,68,88,65,0,0,0,0,88
+	.byte	81,88,0,85,0,88,85,82,84,57,87,86,82,86,85,85
+	.byte	81,0,84,87,85,81,82,0,88,88,88,0,88,82,82,84
+	.byte	71,85,82,0,0,83,85,84,81,82,85,0,68,89,89,0
+	.byte	85,85,86,0,0,0,85,0,87,0,0,0,85,86,83,85
+	.byte	82,86,83,81,85,82,84,86,0,0,86,0,73,82,81,88
+	.byte	87,84,89,83,82,83,82,82,65,0,88,89,0,89,0,68
+	.byte	88,85,87,0,83,87,82,86,83,0,84,85,53,82,85,88
+	.byte	0,89,68,88,73,81,84,89,65,85,0,71,84,87,0,82
+	.byte	89,0,81,84,82,73,85,81,88,88,73,87,82,65,82,88
+	.byte	86,0,85,0,82,0,81,88,88,87,0,83,84,89,0,72
+	.byte	69,0,82,83,81,83,81,84,0,88,84,85,85,66,0,82
+	.byte	67,0,89,0,89,0,68,86,0,81,88,87,0,89,82,87
+	.byte	89,87,88,50,0,82,0,88,82,83,72,0,0,85,81,0
+	.byte	0,82,87,88,0,0,88,83,17,89,85,83,84,87,86,89
+	.byte	89,0,87,87,89,88,0,89,88,84,89,81,41,86,87,85
+	.byte	0,81,87,83,0,70,85,87,0,82,83,87,81,86,84,84
+	.byte	0,87,0,83,87,83,0,72,84,85,85,82,83,0,0,69
+	.byte	83,86,89,65,0,83,0,0,0,0,83,86,66,83,0,0
+	.byte	88,83,0,84,0,0,89,83,89,86,66,0,84,0,84,0
+	.byte	86,82,81,89,85,0,82,87,69,66,0,0,73,84,82,83
+	.byte	89,87,73,72,81,87,82,87,89,70,84,70,0,87,0,0
+	.byte	85,87,71,87,89,81,0,0,84,0,81,86,82,84,86,87
+	.byte	86,68,85,52,82,81,82,88,67,84,88,0,88,0,68,0
+	.byte	81,81,87,68,83,84,0,69,0,0,0,82,86,85,85,88
+	.byte	0,0,41,0,84,83,87,82,81,70,0,81,83,85,0,0
+	.byte	82,67,0,87,86,87,67,0,82,89,87,82,88,81,84,84
+	.byte	66,89,84,0,0,81,88,0,89,84,0,0,83,88,89,70
+	.byte	84,84,87,0,83,84,83,0,88,51,72,69,49,82,87,0
+	.byte	73,83,83,86,87,69,87,85,0,71,68,69,82,85,84,89
+	.byte	0,88,88,0,0,83,67,0,88,83,87,85,0,85,85,0
+	.byte	89,84,88,88,85,0,0,0,49,73,0,85,68,88,69,87
+	.byte	70,82,86,81,0,88,0,82,0,88,38,88,89,0,0,0
+	.byte	84,89,81,0,69,84,0,0,85,68,89,71,85,88,83,69
+	.byte	0,88,87,72,85,82,73,0,82,83,85,83,84,0,82,0
+	.byte	88,0,66,88,84,0,0,68,0,0,65,85,0,0,71,71
+	.byte	85,89,81,82,66,0,87,0,81,88,81,89,0,85,89,67
+	.byte	83,89,83,87,68,0,83,87,83,83,83,0,72,51,86,88
+	.byte	71,87,89,89,82,0,0,69,83,83,85,0,84,0,87,0
+	.byte	88,86,86,84,71,0,0,71,0,0,89,83,84,65,0,68
+	.byte	89,0,87,86,81,89,72,0,81,0,86,89,0,66,65,82
+	.byte	83,86,84,0,89,66,71,49,87,88,0,85,83,87,0,89
+	.byte	0,72,81,86,50,83,89,86,86,73,0,84,0,85,88,0
+	.byte	86,40,81,83,87,0,88,0,83,68,0,84,0,86,82,89
+	.byte	89,50,0,84,82,82,0,86,0,87,0,0,84,0,85,85
+	.byte	0,0,0,83,81,86,86,0,89,65,85,81,0,81,88,0
+	.byte	0,82,52,88,69,0,82,88,0,86,86,0,88,83,0,86
+	.byte	84,89,89,0,87,84,88,86,0,89,85,89,68,88,0,0
+	.byte	0,0,86,81,70,70,88,82,82,0,84,0,68,84,0,87
+	.byte	82,84,82,86,86,0,88,83,0,0,89,84,0,84,85,82
+	.byte	89,85,0,82,81,0,88,84,85,82,88,84,83,0,81,84
+	.byte	85,81,83,82,81,0,83,83,81,84,0,0,88,84,88,84
+	.byte	49,66,89,0,0,54,89,0,82,88,0,0,81,0,0,73
+	.byte	65,65,88,81,88,67,86,0,81,0,82,0,86,70,88,0
+	.byte	0,88,72,89,0,0,70,70,68,89,68,0,87,81,0,85
+	.byte	83,85,72,81,0,87,82,88,69,83,85,88,0,0,0,0
+	.byte	82,70,0,82,82,87,88,72,87,85,81,0,87,85,70,0
+	.byte	57,86,81,85,52,0,0,65,86,81,0,0,87,54,0,82
+	.byte	0,87,86,87,87,0,82,86,84,81,88,84,70,0,73,82
+	.byte	0,86,85,0,83,69,0,0,85,0,0,83,81,86,83,83
+	.byte	86,85,86,49,0,0,0,82,86,88,81,81,67,71,85,85
+	.byte	86,0,84,82,82,70,84,82,67,84,84,0,84,0,73,89
+	.byte	0,37,88,84,71,83,71,0,83,0,0,89,0,86,88,56
+	.byte	81,86,0,83,84,71,84,0,88,0,87,69,81,0,88,66
+	.byte	83,84,0,85,82,82,0,84,89,81,82,0,0,83,86,68
+	.byte	53,0,88,0,88,85,0,81,0,82,0,84,88,0,0,0
+	.byte	89,82,81,0,0,87,68,83,88,0,0,88,82,88,81,89
+	.byte	88,0,86,81,0,66,81,84,0,0,66,53,0,85,72,0
+	.byte	85,83,84,86,86,0,85,88,83,71,81,0,81,83,0,84
+	.byte	83,89,82,0,85,87,0,82,71,67,88,89,0,0,89,0
+	.byte	71,85,85,0,83,0,85,0,0,81,84,0,0,0,88,0
+	.byte	88,72,88,87,0,73,0,0,83,84,88,82,81,70,0,88
+	.byte	87,81,87,0,81,84,86,0,0,50,82,0,71,89,69,67
+	.byte	83,83,0,0,0,0,0,84,89,0,0,89,0,85,89,52
+	.byte	89,81,0,83,83,0,87,86,81,87,82,0,86,87,0,82
+	.byte	69,89,82,83,0,84,88,0,87,87,68,87,89,85,89,89
+	.byte	85,84,89,82,0,0,83,81,0,87,85,71,89,81,85,85
+	.byte	81,89,0,81,85,86,68,87,0,0,83,89,0,83,89,0
+	.byte	87,81,0,88,0,82,85,0,84,83,84,89,84,86,84,68
+	.byte	85,86,86,0,89,87,82,89,88,72,86,88,86,83,0,0
+	.byte	83,39,0,81,0,0,66,88,85,56,0,69,87,87,0,81
+	.byte	86,88,0,0,82,65,0,0,81,0,0,0,89,84,88,82
+	.byte	0,0,85,0,85,87,71,87,0,82,81,82,87,84,84,89
+	.byte	0,0,88,83,0,0,88,85,0,81,87,89,87,88,81,89
+	.byte	85,39,84,56,65,82,84,83,82,0,0,0,86,86,0,83
+	.byte	0,70,83,87,82,86,72,65,70,82,85,85,50,89,81,0
+	.byte	86,85,86,81,84,85,0,70,0,0,81,85,86,88,66,82
+	.byte	88,84,0,0,86,0,0,0,85,73,0,83,0,88,89,0
+	.byte	89,0,0,0,88,0,85,0,89,0,0,70,81,84,88,87
+	.byte	87,0,81,82,0,85,89,83,0,87,0,0,82,82,0,0
+	.byte	83,83,83,82,83,81,0,86,82,73,0,0,87,89,89,0
+	.byte	81,0,83,0,0,85,70,81,0,86,84,85,86,0,0,0
+	.byte	0,83,86,68,0,0,89,89,88,89,0,86,86,87,0,86
+	.byte	85,87,0,87,0,87,83,0,81,0,82,85,89,0,83,87
+	.byte	86,88,87,82,65,82,87,68,84,49,86,88,0,0,82,0
+	.byte	85,84,84,85,88,88,88,82,86,83,85,0,0,87,84,84
+	.byte	89,0,88,84,0,0,0,68,0,57,87,0,68,84,89,85
+	.byte	87,88,82,70,53,89,0,88,89,70,0,89,89,87,35,65
+	.byte	89,84,88,83,89,0,0,81,81,81,81,89,88,81,0,83
+	.byte	86,86,84,0,88,85,0,0,85,86,89,85,87,89,73,0
+	.byte	86,82,0,82,86,87,89,86,84,89,0,0,83,89,87,89
+	.byte	85,83,83,82,0,0,87,0,0,0,71,83,81,89,87,89
+	.byte	82,82,73,69,84,0,0,0,86,87,71,67,0,65,82,83
+	.byte	81,88,88,67,0,84,89,89,70,86,86,69,85,0,87,89
+	.byte	83,0,84,88,87,83,82,0,0,85,0,81,82,0,0,0
+	.byte	89,82,82,0,0,81,82,68,85,83,88,0,89,82,86,81
+	.byte	88,87,83,83,81,0,0,84,70,0,0,83,86,86,65,88
+	.byte	0,0,87,0,69,0,89,0,71,88,88,81,81,0,82,0
+	.byte	83,88,86,89,82,87,0,0,82,0,87,81,89,65,86,0
+	.type	rubik_asm_endgame_keys, @object
+	.size	rubik_asm_endgame_keys, 65536
+rubik_asm_endgame_keys:
+	.word	464144705,38062490,4294967295,160866944,21416281,895784514,216554242,338117337,847911376,710161200,546113941,324409154,757096716,282251800,147540280,4294967295
+	.word	471339785,886642305,894634572,4294967295,4294967295,21509445,717299889,4294967295,874926385,442015764,4294967295,4294967295,4294967295,4294967295,858001461,743737137
+	.word	4294967295,26939857,496256708,543863618,750865192,9966036,186923737,176640784,446359045,4294967295,327373232,546082829,4294967295,560260268,215681840,4294967295
+	.word	21505241,350938628,889332416,228677906,151279426,890261772,4294967295,548070606,543831113,182014785,4294967295,177659921,224478553,25737428,541894016,15342090
+	.word	348914182,151447178,874030725,439001862,461656070,21796114,4294967295,617898177,186427052,4294967295,875112838,169423638,462771269,438510289,179045942,362452482
+	.word	93495986,685925458,320473901,27927724,705078820,681351632,549530453,177825185,713090192,76302757,879298997,549658650,626014020,4294967295,878719696,4294967295
+	.word	21283022,4294967295,430058070,558109114,52570808,458032432,747407940,25694550,881936070,874821846,672936452,4294967295,4294967295,605200857,886347410,445270085
+	.word	806572497,721626945,60372149,610686009,608460884,571925814,875050665,895567272,4294967295,438833930,683950265,690034088,445728473,462627921,16998701,4294967295
+	.word	859851013,747409858,437014728,225227073,564138440,14226712,4294967295,291913945,4294967295,4294967295,575447744,4294967295,316335617,4294967295,151291285,4294967295
+	.word	27406676,219165449,486560070,430195366,170287382,4294967295,4294967295,4294967295,315296344,577169090,4294967295,453138186,826745008,562312372,458810658,893600194
+	.word	4294967295,8917464,315152390,358179885,843335756,488269832,4294967295,180404532,161004232,731056561,224995778,4294967295,879056972,409264802,4294967295,887227058
+	.word	169101005,4294967295,285233990,95041061,145263308,4294967295,407459616,293685901,362447020,23466506,4294967295,323053102,155722112,841362117,325642318,4294967295
+	.word	453267526,4294967295,203704109,721717690,877202122,411832832,575087380,746984273,9220772,4294967295,169103769,4294967295,806569236,4294967295,4294967295,323110926
+	.word	629217672,337863372,323137584,489460022,744564313,303256153,14243594,4294967295,713482384,4294967295,4294967295,717793370,362885798,4294967295,4294967295,4294967295
+	.word	440685145,4294967295,4294967295,189874488,543185352,13297220,4294967295,861014605,4294967295,404537606,18506924,144786197,302670413,889500757,889334402,4294967295
+	.word	177801996,4294967295,4294967295,215041333,550594709,552206537,875251881,447383345,4294967295,457185033,4294967295,609301146,478857378,739461576,679875160,13911813
+	.word	4294967295,4294967295,5061320,147366708,630887694,820660548,4294967295,314757176,4294967295,81073968,90512204,741090725,696857922,176244150,706950985,826418732
+	.word	135615033,571626248,684197642,458515600,4294967295,878323233,696651784,187501261,317528770,442033473,4294967295,4294967295,824445604,187314218,329257516,78434738
+	.word	304498872,592188424,4294967295,443295252,4294967295,604836521,541873485,429987496,4294967295,570603798,4294967295,4908558,696325458,6863625,717821962,5057101
+	.word	4294967295,4294967295,155248010,184969301,188834381,4294967295,439051433,4294967295,886785060,225215880,4294967295,4294967295,4294967295,90382860,429596720,545352069
+	.word	4294967295,847436366,13780280,4294967295,135050920,13160585,731452749,718014634,273757013,214492233,26625161,4294967295,4294967295,583670074,4294967295,60044805
+	.word	4294967295,411060037,744571660,4294967295,887410866,201634522,707273934,4294967295,4294967295,880883268,537287492,711756241,478190100,4294967295,883464246,4294967295
+	.word	184608392,4294967295,294815152,4294967295,878196052,618437256,478221909,426034980,625021400,286986713,722245678,4294967295,324472921,4294967295,815400108,4294967295
+	.word	275121968,4294967295,4294967295,4294967295,875116168,4294967295,4294967295,319586773,820645906,354576034,21389456,74064398,4294967295,823207116,308304428,874654252
+	.word	676410642,324487298,608439125,877210050,4294967295,176239440,308692022,593814945,290632464,170664525,338125968,21402905,195314114,4294967295,604156250,134931978
+	.word	81024177,458303632,840325640,487778582,134801800,222315977,316443281,4294967295,21500684,4294967295,805970130,46291513,427872400,4294967295,336750132,813775428
+	.word	360858004,4294967295,878059537,4294967295,308723734,4294967295,214598448,304244277,338189068,320014745,168112728,847267286,4294967295,810625677,575459404,563164808
+	.word	476645653,26943630,4294967295,438117524,21520776,673652888,876892241,4294967295,155656218,407527440,719395368,185297346,558019865,186278280,608459200,4294967295
+	.word	5026506,4294967295,304626468,731203597,441108552,134783828,210110262,12724021,425797145,340580428,709638433,42743429,747843609,4294967295,543826990,575079769
+	.word	178674480,753442841,86162089,51794696,407511552,4294967295,575287585,4294967295,478306946,4294967295,820299392,894505354,315770689,739816261,4294967295,86270597
+	.word	744547720,195481858,856819020,461506901,4294967295,4294967295,216556802,430065986,169685524,541863956,575441332,316724400,583817346,609540930,713229713,537285977
+	.word	475081522,4294967295,614655426,489476101,4294967295,4294967295,717514770,211498553,405620358,4294967295,4294967295,4294967295,17212596,407669258,730940841,604648232
+	.word	4294967295,338053305,4294967295,4294967295,4294967295,491557138,4294967295,542533704,673343020,4294967295,292054436,752028456,579495041,537158068,488919129,4294967295
+	.word	81335112,15345190,580716932,715305474,4294967295,4294967295,4294967295,721593154,4294967295,742851368,4294967295,4294967295,731915822,4294967295,885068496,4294967295
+	.word	5977432,136759993,732051504,320680129,445802037,613028908,4294967295,886657154,211628610,16934357,192984596,4294967295,732305952,610050094,560150810,4294967295
+	.word	709969228,675821377,23380172,4294967295,722241960,27791700,134796712,618732310,176571448,81413892,4294967295,463652874,439143114,4294967295,471077593,319591052
+	.word	843339266,756848065,4294967295,146888496,4294967295,4294967295,541328012,810026441,891945098,462553736,4294967295,43174606,43391796,4294967295,713189965,474688322
+	.word	572957402,596916404,579921613,606476117,704975437,429990405,893855265,885179049,822497408,21121356,885657610,824627362,455770920,4294967295,22487813,606479000
+	.word	4294967295,470600020,476064441,4294967295,710747181,819601570,46667432,306243092,445416114,495657106,853547316,19738772,286459668,27539606,583309334,338473650
+	.word	4807112,4294967295,26355346,571155236,4294967295,4294967295,4294967295,155465537,585158937,4900142,147640329,160055746,272642836,50517260,176753080,4294967295
+	.word	302551726,593912066,445438502,419697492,463018293,463128737,4294967295,78268601,4294967295,85383336,14948889,675341714,4294967295,4294967295,756098489,684492326
+	.word	486855456,328276622,705055045,17479430,839162388,563482901,496683330,4294967295,4294967295,4294967295,4294967295,85107130,4294967295,722211233,543439552,4294967295
+	.word	4294967295,338375173,4294967295,617783938,145122356,180619030,216541881,597309450,723949354,573317270,4294967295,4294967295,223871385,571617557,73187669,585181364
+	.word	303632852,327848017,4772298,591847684,147088949,95035596,458002976,4294967295,88695052,26952964,429396021,94972310,818468098,4294967295,458277158,895568328
+	.word	840573392,453313366,156567116,723577133,339817297,4294967295,689079564,684024837,4294967295,21403176,575449134,4294967295,23389604,4294967295,4294967295,9261645
+	.word	491788040,828778016,550725256,493130546,550277408,4294967295,27542668,186426454,4294967295,891552452,4294967295,94770696,891682952,878326801,853680145,707291396
+	.word	4294967295,480969945,814253710,713852484,293618316,537602252,860958864,887624384,14965305,826714290,210847161,4294967295,4294967295,4294967295,4294967295,4294967295
+	.word	4294967295,4294967295,169095825,739452441,4294967295,273040437,134619668,631298342,282087577,756416665,4294967295,4294967295,874657042,874780244,822347980,229254689
+	.word	4294967295,473998130,281724954,848441876,211302050,52843270,4294967295,459408176,178784046,212223033,454104744,4294967295,593756942,4294967295,4294967295,891370186
+	.word	458539012,550176004,4294967295,4868554,318812966,290539909,4294967295,4294967295,176998850,4294967295,493119665,4294967295,187093002,891977870,464015370,442062665
+	.word	195463766,826677762,436540245,4777268,190407756,4294967295,4294967295,895501605,445192896,563159245,437064264,4294967295,809903188,88565322,719850280,4294967295
+	.word	751002881,428493120,877974060,889921920,4294967295,4294967295,4294967295,575054553,890452054,348721177,856949940,329462432,26420756,329451985,194709929,328601621
+	.word	362283413,4294967295,315155492,446882865,4294967295,4294967295,4294967295,455774978,152864428,4294967295,4294967295,446878768,15342345,4294967295,407586858,805975377
+	.word	723784760,4294967295,4294967295,684861978,27570724,219427545,91011242,879051158,671913230,290200110,4596248,4294967295,4294967295,715154982,875178128,6871322
+	.word	4294967295,817911365,820650177,407429428,885563552,496521225,719102000,26367532,715305018,4294967295,294160006,4294967295,23554258,538633352,357648526,4294967295
+	.word	457196697,889271477,195114550,746785233,4294967295,630281636,158085666,453301305,617941812,4294967295,541872396,271391124,584769696,718865156,752914984,564146516
+	.word	885664324,4294967295,4294967295,4294967295,182504153,614557141,4294967295,672567880,169420249,438573594,4294967295,4294967295,630371338,4294967295,304236333,751341850
+	.word	13915313,4294967295,4294967295,194062994,14828854,203991482,550118144,411592389,8873648,4294967295,4294967295,4294967295,4294967295,6902040,462473478,541767464
+	.word	885147988,541745408,4294967295,321279778,203108873,4294967295,613572684,613209157,186921017,4294967295,4294967295,419751042,56937260,143286348,304502310,750855385
+	.word	4294967295,46736088,227977889,671924681,463612481,4294967295,609296820,336742188,269275556,23370160,8966564,606904492,755803520,4294967295,222701656,160712724
+	.word	822425250,357708353,893845764,714224129,4638486,192988873,323781072,446433989,26390800,4294967295,709960248,4294967295,90581594,4294967295,181752384,170350169
+	.word	746733954,4294967295,328927442,552423625,679908434,180890298,162084520,4294967295,18487753,545264470,4294967295,225255437,161171532,881381760,358161154,4294967295
+	.word	4294967295,204261066,4294967295,281680450,76171706,4294967295,721494188,4294967295,4294967295,287007748,4294967295,722809925,4294967295,562319744,591455492,4294967295
+	.word	4294967295,706241796,421136644,4294967295,145361338,4294967295,814307780,4294967295,25743662,678179106,584321720,18494244,877732524,444815904,189810122,4294967295
+	.word	4294967295,281732646,580702220,713900204,320276164,4294967295,85636378,459876129,575033656,4294967295,679676306,7128333,78386865,14177417,462574930,4294967295
+	.word	14242632,4294967295,4294967295,273320370,307317516,4294967295,176961553,4294967295,4294967295,458007762,4294967295,893714885,186265857,27416076,715580609,680938244
+	.word	8598356,187083552,21415049,14960826,4294967295,486576950,873804310,17208597,732442950,4294967295,354575777,885659210,819071312,879378702,713603225,746644946
+	.word	281207824,210395216,4294967295,4294967295,4294967295,442829590,290931874,858151204,4294967295,161489364,4294967295,315839234,4294967295,4294967295,4294967295,882979349
+	.word	598122550,4294967295,472000305,4294967295,4294967295,4294967295,137175440,21762320,706222553,323372162,538125780,710347098,458016938,4294967295,407570744,93607429
+	.word	307758860,444667476,583323674,10949461,42421029,421795606,190382858,4294967295,739845932,4294967295,723302660,673453645,4294967295,4294967295,715678850,4294967295
+	.word	274351117,18654885,353141388,440959284,4294967295,348969153,887236690,756162574,60234032,455804165,12731674,18698381,156022312,220508250,862396561,4294967295
+	.word	853807648,476717632,440664884,890524845,593504729,461640244,201871784,4294967295,314739378,4294967295,4294967295,4294967295,411047633,4294967295,541860224,7133705
+	.word	4294967295,194298293,609506721,491001650,337797557,327367232,26618500,4294967295,756887558,571822501,474671176,304572049,885559636,577399208,151390552,4294967295
+	.word	304896548,4294967295,549593112,461641300,176762965,4294967295,896074920,4294967295,191438894,339784370,496242705,445210804,579941060,841570598,4294967295,4294967295
+	.word	626854190,824615557,763447684,4294967295,8991573,5067056,4294967295,15354041,541493530,562253900,273351122,18110669,307769985,822413453,609297100,740828364
+	.word	4294967295,4294967295,4294967295,881938958,895556110,4294967295,4294967295,446883890,4294967295,764971465,826456113,546506444,594326600,443373608,875084486,580948405
+	.word	4294967295,683829794,328751298,17078714,690042040,411722240,753144640,9594382,683804986,4294967295,273200834,291549752,54684233,303248209,845553682,76354125
+	.word	319960088,731068938,320639382,4294967295,407135285,445120662,441975572,476605097,56407332,613056934,671883652,4294967295,826353062,593639769,325487129,4294967295
+	.word	328732718,194316690,190080577,59913768,496255622,4614858,575087414,4294967295,195699214,709102010,710208034,286052365,156796313,294830785,630360533,597840322
+	.word	52697806,681646898,4294967295,306612018,674018609,340167254,281207830,4294967295,4294967295,4294967295,558672260,615338177,304245292,329832590,709114673,730106374
+	.word	715309112,4294967295,890710722,190597193,8602072,744892194,338171577,4294967295,135607089,4294967295,4294967295,438921930,454363909,710149594,178928184,4294967295
+	.word	707007281,21311642,486888601,335692212,671236876,4294967295,4294967295,180902689,890425737,538718501,75918002,169096977,81340057,4294967295,895030560,424461442
+	.word	4294967295,706024204,4294967295,713885837,625383176,583664810,4294967295,4294967295,441524944,4874764,826444298,4294967295,4294967295,546525657,470491705,883640396
+	.word	822745378,696666184,22603142,819609926,585934918,891462070,181686328,488920069,176686860,447351600,146827537,440751640,4294967295,204026552,219416020,134898096
+	.word	43543206,411914277,4294967295,157857849,718023170,4294967295,363353249,4294967295,584896548,4294967295,718300370,4294967295,688658850,563227276,181720082,4294967295
+	.word	719360785,444814080,887380038,454253322,455153978,319968013,320956558,11277005,605476101,190343489,336419204,185622953,4294967295,543828044,4294967295,752107736
+	.word	4294967295,563238920,489318693,439132726,461579841,4294967295,9127352,549737220,4294967295,4294967295,4294967295,630924742,4294967295,731924900,698422572,26613013
+	.word	291005828,714171857,306229786,195446442,8788502,4294967295,4294967295,146875097,17505097,551309352,4294967295,461522632,894566701,281216721,17192777,453651269
+	.word	19150597,4294967295,42691109,576725430,4294967295,4294967295,563788100,4294967295,442245652,89396016,4294967295,576063829,746731545,855780000,4294967295,562701765
+	.word	424710681,454218504,4294967295,294137908,4294967295,329910852,190057049,4294967295,4294967295,753703216,543581865,895814053,722239940,176247384,732336642,4294967295
+	.word	10900664,4294967295,732088588,680605241,4294967295,445736113,440666802,577137312,571249358,579995033,746795522,12806666,355218593,13167301,551356552,856330688
+	.word	732439590,4294967295,23869640,4294967295,545299161,228214144,22340996,286340246,4294967295,4294967295,715317680,152875329,537024329,4294967295,81275577,210158681
+	.word	160477738,170224214,303863249,4294967295,4294967295,4294967295,752968996,316728884,885556933,710706641,184833100,308098626,189803345,848959504,4294967295,4294967295
+	.word	4294967295,294697138,13899409,4294967295,889627718,204089933,579024578,462464180,4294967295,618832546,709126658,606872197,14961286,4294967295,878781872,323151298
+	.word	4294967295,4294967295,631527436,340408896,453139202,46811306,9253444,885183042,219985205,822481993,27809068,453715161,4294967295,320472473,583815305,81089360
+	.word	813906577,765014278,4294967295,705044633,604643748,4294967295,4294967295,848431569,704793421,88258312,4294967295,4294967295,895557809,273286681,537137932,676726312
+	.word	880842317,462475817,854153384,17228970,4294967295,550527624,4294967295,4294967295,271083908,591575321,4294967295,4294967295,224469772,4294967295,596710740,25465357
+	.word	190351662,496273042,493128260,318854328,4739498,323784722,441508144,23337432,757346434,4294967295,581732789,463652904,4294967295,537137593,606868110,430460969
+	.word	686036768,4294967295,826477069,4294967295,43738546,12770129,329920560,4294967295,336149124,4294967295,4294967295,573008085,22853770,4294967295,558184640,4294967295
+	.word	489457354,887427158,324592845,4294967295,81338581,885281345,538336037,4294967295,593897508,38070930,710227033,575104705,4294967295,687997196,13948121,731064366
+	.word	4294967295,25862318,4294967295,348317216,4294967295,329257492,17577301,17044244,21246138,4294967295,339821240,4294967295,714475282,740762832,489328666,4294967295
+	.word	4294967295,486672025,579245753,287499982,475840520,4294967295,847952386,287971769,550150180,753733640,438839972,4294967295,738763204,4294967295,25483473,713091250
+	.word	438489610,4294967295,710468942,4294967295,559292578,824259845,160052528,584896805,475021653,11191086,576403464,4294967295,559751588,181151362,674015749,4294967295
+	.word	885596181,878391810,4294967295,807839924,228674188,4294967295,591790341,8863961,454296761,488769845,4294967295,742737741,457392216,562726220,296237766,4294967295
+	.word	574902681,718890184,828515376,4294967295,715260686,844804104,181045832,76211782,747190488,593633305,885261492,286038721,274106194,572302549,214466873,446301766
+	.word	4294967295,4294967295,94587561,4294967295,680276096,308939161,550293794,4294967295,557983565,822741414,190362434,739527493,4294967295,358028304,707008977,438454584
+	.word	194269774,4294967295,4294967295,4294967295,444810969,335995428,570825417,625385541,4294967295,537011669,268620377,890589253,740894540,152707481,4294967295,845842705
+	.word	318782105,709274370,304895150,404571284,363365068,675820289,4294967295,462509266,608621657,4294967295,4294967295,285370061,187073849,329926732,181059610,4294967295
+	.word	764840198,4294967295,875209254,604311994,719098378,4294967295,73818644,420143272,715524664,459081253,690037509,596806350,320495821,593945921,4294967295,4294967295
+	.word	419695257,323785250,683939417,319904590,493652550,4294967295,147412256,597832394,609314126,428920970,4294967295,21115449,10049689,469910344,137179690,883086862
+	.word	881262736,4294967295,542827842,4294967295,328798848,440682262,135056008,289464493,4294967295,4294967295,4294967295,275467022,684015768,704819545,9586454,614491853
+	.word	4294967295,848968192,4294967295,4294967295,23381134,290210176,81352488,463996198,4294967295,314660441,457774360,4294967295,4294967295,181445140,315361493,615146658
+	.word	686384422,4294967295,844378657,713245785,304910902,719644754,4294967295,848447170,543183624,4294967295,707541201,714229549,883460750,445437988,287315756,357656101
+	.word	39401288,74081617,325118534,4294967295,4294967295,4294967295,323499778,608449344,546101698,4294967295,4294967295,4294967295,26401225,11294128,306984593,715606849
+	.word	308677304,738665265,446876314,496116756,458844288,4294967295,4294967295,893401362,4294967295,710214418,26425648,187343298,461558345,732071465,160516750,40262233
+	.word	227954761,317350948,4294967295,875184522,4294967295,306276884,186739402,193385792,46964918,438594052,478210225,293995733,630927520,4294967295,843352590,308939184
+	.word	443058905,4294967295,472158810,4294967295,4294967295,457508389,4294967295,320277124,441764642,319982421,585262390,4294967295,882987396,881472672,4294967295,275450425
+	.word	46418105,885081796,625041832,181668377,285268185,874975946,4294967295,55351689,895878321,4294967295,743907378,14837288,60508553,856832256,193528142,591405869
+	.word	546091044,273764941,290907218,349328193,4294967295,4294967295,887750800,805451337,43588236,185284680,472148625,4294967295,874652368,807552277,60052996,4294967295
+	.word	438889160,881472593,75960916,336249636,428905106,216317977,4294967295,685335812,74228150,222560792,4631218,713179521,4294967295,881361044,545346980,4294967295
+	.word	718542657,25729737,4294967295,4294967295,545720116,327713485,730927436,575451476,709289009,447501393,178850604,4294967295,408423048,4294967295,42625426,4294967295
+	.word	597035721,470502148,875057540,4294967295,721730340,46425652,316293176,4294967295,13837976,890720416,193639746,4294967295,26431945,15361578,282138258,4294967295
+	.word	893550864,4294967295,559757504,824612905,874657108,4294967295,457400624,874657333,94656068,4294967295,271148213,574909132,323783206,411241114,4294967295,437405493
+	.word	442521873,597366028,543557972,430199877,4294967295,168340154,680035717,4294967295,183294026,4294967295,4294967295,618291209,710754562,892025092,479810306,187042137
+	.word	285881349,574699860,148917012,338442772,707572038,328615618,722822336,824457270,811219488,542410380,889346120,559178821,438966576,4294967295,765727168,286333718
+	.word	558016257,303261329,542836120,472082737,308865740,814141456,4294967295,474661664,17062342,496305750,4294967295,577145113,819482914,315166744,688656768,4294967295
+	.word	4294967295,4294967295,608436633,8918701,4294967295,442786868,285346582,134636881,4294967295,4294967295,826546222,757281576,190358937,4294967295,539235084,4294967295
+	.word	4294967295,315843217,4294967295,472126261,6735126,882913926,4294967295,210388768,210262796,4294967295,542515898,617875096,811942926,4294967295,25305810,216687656
+	.word	631449684,4294967295,675559185,881476749,805979341,4294967295,21115730,4643153,4294967295,218931636,571265449,873009577,4294967295,438970522,764758085,877934241
+	.word	316492421,730931665,4294967295,143393300,549788482,358094241,562438164,4294967295,841225906,887640137,4294967295,420088650,423630425,314663120,741118508,490955785
+	.word	227853954,8985048,4294967295,4294967295,21317774,176698017,17053461,291681090,441013593,4294967295,441771554,314600133,218935336,612525505,673753934,809934868
+	.word	75686484,4294967295,302433093,4294967295,4294967295,891488596,186737973,203706840,893784322,562090278,4294967295,329910828,882980484,180378441,212349570,539256212
+	.word	696565764,189268440,721577000,823600836,86398757,4294967295,4294967295,630367276,134889816,609313108,4294967295,408429364,48011569,7091888,4294967295,719111305
+	.word	877281664,4294967295,306786357,4475578,170599832,690381860,4294967295,462461650,25698692,9061132,444728888,4294967295,315820564,893551884,545318278,4294967295
+	.word	190138776,609707048,480842562,169263385,81085092,358759217,134888210,193639968,596846285,4294967295,584881429,4294967295,877969813,813745798,77748826,4294967295
+	.word	4294967295,290243968,4294967295,314643030,732436937,879110722,271129228,271227697,4294967295,4605706,4294967295,23534088,81285273,539125141,4294967295,820118832
+	.word	46869328,683983652,608436940,441537881,350381110,354551513,86384856,146888018,458580482,77810508,4294967295,585968292,180644546,282677317,436790920,147858228
+	.word	152097578,4294967295,27406610,575334722,214173457,876652946,5592844,4294967295,810039606,4294967295,4294967295,4294967295,4294967295,810824786,12932697,497762466
+	.word	4294967295,673497242,15522052,4294967295,848824502,593311042,877199700,543253774,273760665,610929420,4294967295,190068496,224716226,88908208,543445081,4294967295
+	.word	856694926,861055394,4294967295,489461012,453282566,282233553,169101068,740476749,423891513,437855448,576137858,549620490,460071042,53164313,731429152,282249026
+	.word	19569097,579942085,764577321,176831042,4294967295,176720314,4294967295,320681669,549610120,4294967295,185883033,839559312,4294967295,60440746,42133037,862405640
+	.word	302559449,707139896,457523968,151325336,877221184,4294967295,40511928,281151029,4294967295,361936469,4294967295,455779077,4294967295,419564360,186935308,574673709
+	.word	696813742,4294967295,610939138,19575588,25444524,4762317,338121477,4294967295,25835081,316721990,190886696,338178198,147456280,285939788,191445800,891302038
+	.word	4294967295,878053000,4294967295,151696706,147464208,683959365,722799372,4294967295,745048409,295219220,886395952,4294967295,8853082,147473160,885315793,4294967295
+	.word	186079514,478728410,325108921,717571141,22852106,890414132,169103825,4294967295,194402577,269115916,462561824,4294967295,4294967295,4294967295,577373998,545677956
+	.word	4294967295,152701708,5793068,210842138,543558422,709634066,4294967295,296145412,423911601,885080744,490891810,617616202,740037129,4294967295,190268225,828969216
+	.word	609636361,319422604,4901338,471033430,746720080,86653081,93767893,488416386,572940426,874792653,148906553,159732112,195050193,612557218,887675170,4294967295
+	.word	4294967295,463603370,4294967295,4294967295,4294967295,458233673,291584217,193406033,4294967295,718365194,454698177,546133154,820250276,470106262,447255170,596289922
+	.word	766027845,706221337,463652950,13150004,4294967295,696259084,752034338,591796000,216093448,4294967295,420251830,160967330,4294967295,4294967295,563480777,4294967295
+	.word	539670729,597372965,57450670,440689748,4294967295,184964378,4294967295,4294967295,718619394,4294967295,17504526,4294967295,722561293,4294967295,19575066,4294967295
+	.word	182015321,27936200,338105940,627355834,4294967295,4294967295,4294967295,6861466,6694456,19338548,563515648,5022221,4294967295,755130440,457707530,4294967295
+	.word	147481921,17510617,161555120,631690376,893920676,681984026,4294967295,4294967295,811213234,147457625,287704773,319886008,4294967295,60035636,753714304,891726502
+	.word	584884930,93754890,840176084,4294967295,18043161,4294967295,4294967295,459064449,4294967295,813766066,841521460,723690274,447354936,4294967295,606230317,4294967295
+	.word	303712729,851772561,78428710,4294967295,874660232,458515666,411895952,617767222,289825809,4294967295,811862604,4294967295,315639556,880857232,573323589,429132308
+	.word	4294967295,474536192,4294967295,4294967295,318923405,4891409,147604821,549528342,4294967295,550143144,876890196,5727880,169255702,731197489,4294967295,4875786
+	.word	724314284,630923717,593815756,26785942,461590833,4294967295,731451404,18690260,886641346,4294967295,193221197,4294967295,879443977,4294967295,4294967295,211173397
+	.word	4294967295,883440324,4294967295,4294967295,574884281,340419149,447496277,4294967295,4294967295,269260212,765669920,8951220,325895584,169231669,4294967295,743223552
+	.word	847796609,688259910,841490574,157362586,170470196,211497497,4294967295,861349073,318781653,337865292,474818257,542193305,723911866,4294967295,4294967295,303896148
+	.word	177825472,748866338,453126229,4294967295,750872105,4294967295,881279680,136989066,323107385,142627216,763921800,25434580,57461070,626353325,86381397,407527946
+	.word	445843992,4294967295,886186497,723609902,549544196,444680376,156803458,606360761,21119752,493095121,4294967295,4294967295,690751748,291595790,4294967295,211900882
+	.word	580651182,890709702,675296561,184978261,805591492,4294967295,446778148,474522713,562737345,328796597,13911893,307709972,739513778,491261961,805836109,203698896
+	.word	823398786,147637270,428917940,439141686,419451140,353002945,23343953,873148754,81337049,4294967295,170665518,4294967295,14232388,168176213,442591818,4294967295
+	.word	4294967295,471027993,718279208,146887442,4294967295,282813602,730927630,4294967295,881505824,575461826,4294967295,194003625,5720884,550316101,689988908,606491941
+	.word	848449580,354444493,619481765,474777108,53237928,730932433,439145642,819601925,4294967295,698745138,341459713,4294967295,81357124,320496833,4294967295,454857985
+	.word	4294967295,419765078,4294967295,53111076,4294967295,545738945,722245932,446194692,719454776,593926920,222710074,4294967295,721742018,295096838,4294967295,707567794
+	.word	340190256,8833209,570571448,423887000,306229977,4294967295,879118025,882907852,895881730,159462032,678213192,405623976,320276698,223621202,195320273,876683797
+	.word	168191280,479220249,719095121,826876077,4294967295,612586969,706025996,209768922,4294967295,732435848,706122512,225192369,4294967295,14160521,630621494,709429032
+	.word	134619734,539662809,407459138,4294967295,430514848,314772276,730212933,575286018,826349872,181020249,324419736,39625236,187336025,46360273,572805262,4294967295
+	.word	303261140,558277702,4294967295,855771593,4294967295,352477836,548145324,430180884,881459664,4294967295,4294967295,25433677,4294967295,470950677,596713614,751570953
+	.word	629317716,412959924,883067286,751135264,4294967295,181053233,18175364,195725617,731920585,878716372,81007257,852711682,537076148,4294967295,874665293,169109012
+	.word	77818452,4294967295,429460102,593913122,496650250,841224756,4294967295,323357521,80955732,757130510,4294967295,813841074,558150850,881463372,18691242,285271446
+	.word	4294967295,145281496,26794404,436769045,731187717,681357889,8806932,627189850,442288438,593896486,354871476,429394569,4294967295,94937556,10668468,181690900
+	.word	4294967295,746656186,17608981,877744530,4294967295,187327914,563434880,361829812,4294967295,560334632,844761642,673784589,858020293,4294967295,696821796,304801969
+	.word	881236480,627466310,291648274,203706969,23348396,4294967295,820267076,4294967295,4294967295,571614873,4294967295,542201610,811875010,78321228,626460857,441232050
+	.word	545392333,4294967295,618748230,4294967295,5977368,4294967295,461443786,170551690,731071778,8611285,303653036,896043429,730931374,194588713,705043248,4294967295
+	.word	4294967295,9091878,848954789,707051928,170402645,281544890,438444822,497619234,713884230,562692364,4294967295,696650054,4294967295,168382797,187098817,680670978
+	.word	55091374,283772710,4294967295,562304717,877212296,291648593,591684646,4294967295,192980369,76704460,4294967295,4294967295,51649196,4294967295,723781422,190628234
+	.word	407512897,304924845,439133734,329926692,407689265,4294967295,4294967295,143477120,4294967295,407520345,193216896,4294967295,891553477,4294967295,5789096,4294967295
+	.word	4294967295,79864661,316820152,308864052,23685512,4294967295,190407690,886638902,321263233,873899654,894912581,861344258,187347002,74070792,826542514,439129778
+	.word	4294967295,4294967295,591725721,15213334,459350566,270222788,328288437,4294967295,4294967295,407126072,39635400,706885160,886785282,11326866,169095897,575318862
+	.word	721510604,4294967295,4294967295,4294967295,614552793,879265161,885735428,153965992,461553717,204026697,308806414,352477826,4294967295,609309144,19343508,818553986
+	.word	814256149,203842865,170420908,848965793,605692357,840507812,816222882,308040065,731448776,4294967295,362956449,4294967295,17568078,328619524,182740532,764847282
+	.word	178686618,578834853,4294967295,543993910,4294967295,455776034,575957004,4294967295,747647761,71783737,89964684,4294967295,445276320,4294967295,39282964,4294967295
+	.word	304245453,157846280,4294967295,4294967295,4294967295,22164057,4294967295,462034178,12774066,537274148,4294967295,542421761,190661890,155727625,190646664,4294967295
+	.word	146885461,874830382,4294967295,6104468,591442057,445252164,316834326,443064406,46799433,4294967295,4294967295,4294967295,59285973,447496386,73802328,559374536
+	.word	461546050,711277360,159797264,354898114,4294967295,811881520,538129113,22823365,843614510,550274198,152885704,579948728,354812581,891980198,4294967295,320638988
+	.word	706553040,710411673,42130194,283839238,295253154,746665509,190621772,160441810,453286530,584190805,4294967295,316707474,458753226,4294967295,715665465,742860289
+	.word	690096570,738478916,13914257,4294967295,4294967295,4294967295,572921142,302179893,841163309,27531734,4294967295,186066722,730989842,548149718,4294967295,564138390
+	.word	690397272,683762992,713451589,4294967295,606529718,327205517,747419170,157065616,177003052,690271042,4294967295,573204780,4294967295,94781621,709124621,496151106
+	.word	4294967295,4294967295,896086052,461447766,438920501,739460876,4294967295,539120393,563172676,459327242,814306694,878086710,4294967295,4294967295,13952533,4294967295
+	.word	4294967295,19577049,222605858,4294967295,323512388,4613429,268845844,486892565,357386434,572207304,704815536,4294967295,444634802,181420820,4294967295,575320104
+	.word	320231448,461951237,843330226,180447830,4294967295,155977129,40397480,89351442,497617540,765600844,46421168,562301140,176894488,19162789,491021521,23210510
+	.word	218923692,4294967295,4294967295,809555218,488841236,4294967295,4294967295,631320869,4294967295,4294967295,77812280,813848129,826812420,740444940,688653637,4294967295
+	.word	319894741,579638944,539768085,4294967295,861440200,303248080,7160524,4294967295,4294967295,427950356,18290362,4294967295,362419216,856840200,189203032,51664645
+	.word	186267929,169526617,4294967295,717398042,23599496,4772282,304888405,4294967295,155207961,183149145,4294967295,545393326,21803560,151442506,4294967295,741120300
+	.word	4294967295,4294967295,550507304,597370306,218943776,4294967295,4294967295,303863474,608502445,745054988,281712697,18166936,631585474,46291784,891693092,756189642
+	.word	841232949,4294967295,4294967295,537694518,4294967295,21325349,550274218,756211756,39381704,722511020,46426820,72803669,4294967295,812255564,4294967295,4294967295
+	.word	874987732,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,177625689,4294967295,756852876,25732486,4294967295,618275650,713071001,709638729,853691016
+	.word	328800302,4294967295,321073818,13280774,709117004,185401686,443328065,822367404,46967460,563094668,631318678,675571202,18004681,189088813,891556224,4294967295
+	.word	88674760,281168537,281175058,570733273,27406646,19142452,77740882,308864469,823473792,137188909,707310762,4637448,480380473,136668566,618793306,489295882
+	.word	4294967295,673628345,717400850,4294967295,285869261,411722308,4294967295,21303768,445212326,339830228,315836121,608182742,315157188,752947984,328284304,630461069
+	.word	302658776,856951462,4294967295,717416706,470373700,419563225,161743534,4294967295,4610586,76167769,290645570,470307000,281104985,407702036,744500044,10110790
+	.word	183322946,593500460,724305190,676112961,328815778,216271578,27699732,891687626,25443014,545478732,887767110,4294967295,407519512,4294967295,718823684,4294967295
+	.word	826417168,4294967295,4294967295,190407981,18160398,184608201,488657189,810198540,143438930,463151185,890896644,731258897,580324058,407503624,617877525,885072452
+	.word	629224789,4294967295,4294967295,302692870,580014093,9070148,136749622,317526100,88678840,675571244,4294967295,817905800,696521088,4294967295,721426889,876886720
+	.word	756093260,94769457,4294967295,4294967295,323111745,446874389,159787088,454354596,765538858,4294967295,815288742,318920526,4294967295,23208401,4294967295,441737236
+	.word	4294967295,419467604,21148464,4294967295,625026252,549739302,537178901,756291640,10271238,4294967295,4294967295,295882764,18035401,26824841,753146626,328876238
+	.word	731170212,4294967295,304616078,4294967295,491987545,182715158,690231053,690432004,177800921,489328712,4294967295,4294967295,4294967295,4294967295,4294967295,596715940
+	.word	160041296,460080388,445798489,462506261,357983424,76059341,4294967295,11023002,4294967295,578828997,4294967295,4875820,4294967295,856763044,4294967295,828425608
+	.word	876695854,4294967295,4294967295,8800068,585143976,176577346,4294967295,559231064,4294967295,476139800,189303626,77751886,890327300,4294967295,684238905,4294967295
+	.word	744010824,877023746,756298914,38328714,4294967295,86136109,4294967295,294834190,155994126,886776870,227804876,487366849,4294967295,4294967295,684474496,161161760
+	.word	181700153,294728848,560738504,439035090,445731396,894583086,559720900,764543246,413190852,4294967295,224708684,486834388,675547724,688657857,745357325,576797352
+	.word	189573698,873911818,294782354,306787124,454231348,756441409,4294967295,4294967295,690753986,444621973,492839089,4891180,629462093,340574880,27810246,6830889
+	.word	746983442,4294967295,741126694,4294967295,746657613,4294967295,559155405,4294967295,718358340,625226561,419718357,319885978,4294967295,286984365,747114509,879015986
+	.word	562049672,4294967295,286656164,182493782,580019905,4294967295,4294967295,742867993,713255362,12739080,824447394,690109224,4294967295,4294967295,4294967295,447501456
+	.word	593585288,73934612,718554264,281675526,4294967295,487614148,4294967295,891637765,537137998,697382148,4294967295,407110168,4294967295,677390124,4294967295,476407489
+	.word	229312782,630272648,189866574,710232448,478299958,845226550,4294967295,81465896,813765197,4294967295,22296337,4294967295,325075366,721494468,877742549,893920301
+	.word	876685844,320475916,4294967295,882540964,690239494,745353736,4294967295,4294967295,679928978,440457786,4294967295,764552205,883634386,4294967295,282255412,697778305
+	.word	184642184,224702512,545273509,176732980,294859457,182240297,4294967295,4294967295,681346220,9228754,177002542,26628369,4294967295,4907528,325109126,134899240
+	.word	879240877,4294967295,4294967295,454854870,287476500,4294967295,6702902,715318737,4294967295,690366594,195056138,4294967295,4294967295,4294967295,580005940,4294967295
+	.word	219820105,227561993,885312130,596908738,169109036,711369808,583101130,182494772,545456601,751314113,752093764,25635524,4294967295,357098625,619516244,539669258
+	.word	826688581,294170678,308730640,4294967295,689005956,571627276,72902988,4294967295,161030165,4294967295,609264461,4294967295,630199752,879037136,285630612,4294967295
+	.word	82055865,190661677,325202721,340133560,488900826,462061704,12764438,9263309,684460169,4294967295,853825696,820511924,488725320,177899929,4294967295,11290836
+	.word	4294967295,630326604,327615060,170408214,4294967295,181491529,307888696,4294967295,4294967295,227886166,4294967295,348718260,543175001,579013421,4294967295,362878358
+	.word	161884246,336750156,4294967295,168051540,19190564,574884660,547809300,874980036,307712786,4294967295,4294967295,194396808,4294967295,4294967295,538784904,5054932
+	.word	192988552,183272726,194545934,619013189,4294967295,308032529,730368394,189867821,732072489,609511054,4294967295,4294967295,4294967295,4294967295,463149314,4294967295
+	.word	840569357,353048025,756198210,4294967295,169105934,4294967295,160892489,453337764,4294967295,439134358,4294967295,59916968,4294967295,4294967295,886314673,4294967295
+	.word	455168170,195692881,676406841,4294967295,361399684,191433146,618729814,4294967295,807547401,4294967295,180633625,841497256,4294967295,4294967295,281679898,204022230
+	.word	56937286,481083444,4294967295,4294967295,80560296,4294967295,631331274,4294967295,4294967295,202909460,4294967295,805590605,4294967295,4294967295,4294967295,585163926
+	.word	812267778,4294967295,574902714,707144529,4294967295,11014586,877275725,545995590,4294967295,696649041,4294967295,290211265,573183385,5981576,419714137,5026482
+	.word	25315021,12800785,337798742,745070850,580719234,730864140,445206616,672294344,4294967295,543437880,469909816,4483506,4294967295,361272397,496174388,4294967295
+	.word	4294967295,190067793,328877477,711264698,478173956,680001688,439111850,4294967295,4294967295,723740745,438522168,73689522,169517836,194401602,4294967295,303616780
+	.word	303880748,488251586,169550290,4294967295,446711590,4294967295,228677066,306235188,453731401,303253196,486839002,4294967295,157852066,814298274,317540532,446720180
+	.word	491787016,147546162,317216804,86250324,48408340,571154637,826840488,707016197,320604846,4294967295,560071992,188819000,56912398,4900172,324055826,584209730
+	.word	321663029,336744849,616912002,453814434,4294967295,4294967295,4294967295,710162257,545403925,443307050,709421130,719096325,629453506,706523410,11211290,4294967295
+	.word	349267089,411124888,190916401,22165258,402809364,4294967295,550244608,718803000,4294967295,184603981,455174854,4294967295,4294967295,4294967295,176832568,317343904
+	.word	889491840,189073200,4294967295,4294967295,4294967295,180634420,169486738,187359656,4294967295,732088608,4294967295,4294967295,4294967295,731415978,882521633,630248621
+	.word	18486541,13321433,616604857,4294967295,81351432,4294967295,226973192,875219118,841664680,474032824,268849296,21279290,457206034,4294967295,745058344,444656338
+	.word	8603341,4294967295,715541317,438571706,455092022,13297834,873150724,4294967295,552210714,470598308,4294967295,4294967295,338302765,18490777,853805620,4294967295
+	.word	304665774,861020208,874981956,697631884,23348366,4294967295,4294967295,23357957,4294967295,675562913,282892369,4294967295,630469813,421319753,216846642,349324098
+	.word	545940526,13165844,441244192,4294967295,753412932,580295426,4294967295,609487700,4294967295,4294967295,606394820,9900817,405479568,890418434,60052006,549741761
+	.word	4294967295,50504345,813844526,156027201,445334680,885212865,189018944,489317569,577163305,170674612,421861024,489476388,471408793,710175297,706241989,152712962
+	.word	94059081,4294967295,21835976,459016777,4294967295,4294967295,631705654,8837670,271258381,282662676,4294967295,420257985,4294967295,765724882,60070540,843337778
+	.word	195314742,575066400,4294967295,90318265,13161625,184997186,445190976,585149270,189841800,4294967295,203900616,424416273,73939225,459018288,328380950,4294967295
+	.word	559166624,145113858,407127893,283264800,407440213,147642913,223130112,855804558,4294967295,93856397,4294967295,4294967295,891640258,10302148,4294967295,156582361
+	.word	441762873,613200512,151257752,4294967295,764424393,4294967295,315294904,719145088,161043912,4294967295,764454290,4294967295,4294967295,4294967295,143447424,323489818
+	.word	630338177,4294967295,677689401,315360773,826357960,680682961,893924521,572203788,4796761,4294967295,593770521,453711960,157885465,696393740,882988452,219228845
+	.word	853084309,215631688,826688522,756093385,4294967295,811205932,4294967295,294139556,215506965,304237013,683936326,892019906,675815832,11293074,764416273,711461176
+	.word	493429508,4294967295,193235346,210842452,4294967295,4860313,4294967295,891953280,4294967295,218550585,4294967295,744580553,839430825,270209809,19276948,575022722
+	.word	327368788,764487088,8802456,22889741,715135449,86647205,4294967295,613071033,429413636,878754474,81338548,4294967295,4294967295,281691161,18683272,19669701
+	.word	4294967295,362288141,354490073,4294967295,413210133,4294967295,324592770,4294967295,23630638,538207700,229134636,4294967295,294667916,721498952,805966216,4294967295
+	.word	723532089,458319141,814290997,462629553,673618704,211243793,458508377,420088134,4294967295,190886409,84153164,136598928,157566990,4294967295,4294967295,458776580
+	.word	579494029,348291769,718801737,4294967295,429016712,317252692,4294967295,614944898,4294967295,363268273,476398356,22882445,606919110,614535948,302180758,853856386
+	.word	293785616,550144260,562319777,570860185,46844090,630468788,4294967295,328291749,283839236,4294967295,714945730,731133958,155232857,478316121,731449670,290193552
+	.word	615135236,4294967295,290205700,713507969,4605748,95043976,4294967295,195438673,155202841,22288146,806635212,679928960,458254673,169101108,319623808,4294967295
+	.word	857877197,338466477,77370065,156317194,631904268,810035874,4294967295,745322784,329814062,4294967295,4294967295,4294967295,54805894,609891618,878387218,711766537
+	.word	4294967295,160716208,480793380,684494865,461461704,818054793,46803730,690102318,4294967295,613508550,715141969,4294967295,46425734,145376674,4294967295,306890830
+	.word	79897172,746664773,4294967295,480994882,4294967295,631641397,4294967295,204251853,134631992,684869410,4294967295,752115760,625025804,181971028,706946573,314731073
+	.word	4294967295,348164948,873908933,321279129,4294967295,189871689,202163848,740831432,168519241,753747137,4294967295,710977050,717415969,4294967295,4294967295,320637133
+	.word	147416085,571631049,351092740,680309890,4294967295,218933324,15516330,625128258,715678766,675693322,4294967295,4294967295,4294967295,459441736,4294967295,51783897
+	.word	436787400,183293010,4294967295,4294967295,183257376,883083906,596923404,203835097,470360280,288163237,461523016,744828952,60203557,304890502,549607681,270231052
+	.word	705480072,4294967295,4294967295,459475761,631572622,625213614,190071564,134629081,491790917,854106820,613504172,549586728,717408041,596312270,844565012,440936474
+	.word	877212949,195319826,4294967295,710751817,201639566,572969766,493658129,10311056,877220296,430445250,4294967295,4294967295,740435513,562728968,721578056,271238598
+	.word	337786640,60199601,717375265,4294967295,563403170,4294967295,4294967295,874989908,4294967295,549618440,848998577,4294967295,73812314,339817168,461638353,136602004
+	.word	757474361,15352025,178083852,542205229,890249605,4294967295,4294967295,136894764,349309780,4294967295,4294967295,4294967295,810105472,81355092,169105881,407655433
+	.word	440683266,684206106,710488896,453141792,18292886,216753698,4294967295,176899905,442009305,315779157,194327605,764937420,4294967295,354572334,630659092,461447348
+	.word	4294967295,4294967295,302172814,423774017,354441988,697766920,408765448,625281477,354552249,4294967295,430442806,463732946,4294967295,4294967295,4294967295,4294967295
+	.word	860129426,751833608,709281081,411189945,227615441,4294967295,895883784,55974489,12916401,4294967295,204290632,46702772,625025208,625348618,446175254,4294967295
+	.word	889336148,883634306,439109892,160047682,453826630,463771700,4294967295,609509389,60304046,713254353,440429066,182740658,476074585,76993030,353153152,764948737
+	.word	4294967295,583756036,584262336,19589292,4294967295,809895477,457459738,413176658,4294967295,7120278,680092098,4294967295,204256808,47502117,4294967295,314665170
+	.word	4294967295,143026720,4294967295,22308429,711771394,585147141,472459449,4294967295,440690336,271205764,21381400,746631718,4294967295,4294967295,612577364,722863304
+	.word	885330518,487380292,18305801,4294967295,447484418,4294967295,158120209,4294967295,4294967295,270217433,675898818,457468082,4294967295,4294967295,4294967295,10638892
+	.word	718022150,442575546,9220646,294146221,189817356,539113177,463618070,162138536,316462116,4294967295,4294967295,5790170,4294967295,160047692,891311436,4294967295
+	.word	27799752,845564584,4294967295,4294967295,304552756,723917608,4294967295,585388806,550179657,710436161,152528980,354902724,316279621,461445840,307779373,269096785
+	.word	461449796,630333909,218565460,541852296,4294967295,186669529,459573465,730155149,4294967295,21403961,715655588,4294967295,195052846,631724292,4294967295,847262373
+	.word	4294967295,291904002,889915718,4294967295,325085324,462037168,4294967295,143280928,4294967295,210371346,48419369,4294967295,679667088,160826933,709113945,619321657
+	.word	294864340,874795398,441805440,673487404,26557092,4294967295,273496576,315377733,617351814,751585410,454842372,541518498,78046418,60211509,575300654,182225236
+	.word	304240434,303699724,13915673,19142349,53094605,564138410,4294967295,563781825,178874773,4294967295,319490861,890638357,574895874,323783076,362186898,281839282
+	.word	4294967295,170416585,304564410,4793110,458297689,421205000,4294967295,457703705,60215465,4294967295,4294967295,478807856,814175237,4860492,454206230,9594540
+	.word	723529914,26783892,614929050,17051800,4294967295,571250088,874812082,4294967295,189282393,721578316,680682544,4294967295,21391570,496123925,145145881,478971024
+	.word	579933997,4294967295,303894993,186721721,860891660,860243974,358384817,190900689,80894792,4294967295,4294967295,357635888,454318086,25433524,319592524,4294967295
+	.word	881465424,4294967295,224822578,203828053,4294967295,877036201,4294967295,4294967295,226578764,729846285,4294967295,54815173,753437510,306932096,765741068,195704872
+	.word	618927801,824379784,457336353,563777550,193536716,4294967295,4294967295,4294967295,543445378,538745110,4294967295,4294967295,4294967295,822518468,178958874,613082190
+	.word	4294967295,10170577,476875089,303457425,6767412,281171713,883439620,559287112,4294967295,891295401,446204678,4294967295,549523768,4294967295,268981070,329920642
+	.word	15215364,420285064,437475610,4294967295,42473881,609300825,56138041,625022792,27404978,13850897,557846796,21127720,474678793,4294967295,717783300,407439700
+	.word	306595482,717495073,538186508,446227636,474687233,21542040,4294967295,4294967295,826848266,857879594,559158016,25633488,4294967295,698492974,4294967295,180905994
+	.word	894579721,42548022,155582736,144783032,541492502,4294967295,596710837,17585357,894448913,281568961,4294967295,155607560,584787161,4294967295,306988045,8611372
+	.word	156820748,714950661,316709465,155599616,444793364,889323976,4294967295,574969665,4294967295,677691810,155590680,51030406,471033364,338467286,356680113,614949076
+	.word	46701256,723528452,856826326,750952992,840114740,823219592,168192336,214575648,608567608,14377297,4294967295,826868908,4294967295,439132336,689222660,5794134
+	.word	580575268,8926981,4294967295,170670793,4294967295,4294967295,4294967295,840320324,306235860,152318618,407504457,4294967295,823562262,10040984,439010649,730117169
+	.word	614632120,857887106,4294967295,320475149,421699638,487936217,148507177,493095718,461936948,696395153,4294967295,496567464,557986889,824195220,340342432,226576072
+	.word	204222773,319559702,4294967295,4294967295,187048726,4294967295,4294967295,4294967295,4294967295,571910841,4294967295,810173740,457447969,194389557,4294967295,134891854
+	.word	4294967295,438853832,11032356,227825074,328274478,46418740,19572890,558960973,437524273,4294967295,609026765,4294967295,595875917,328861252,358091193,90325262
+	.word	17600970,195627318,72636236,19157434,4294967295,4294967295,4294967295,715307586,411571289,470585896,4294967295,134492696,4294967295,4294967295,23933448,610361750
+	.word	681345550,281547540,478822593,89989292,430055478,439019844,4294967295,4294967295,844182068,182506249,270717466,308087437,4294967295,328602132,4294967295,550283477
+	.word	711501633,4294967295,4294967295,550152378,27543724,15538480,858425768,4294967295,4294967295,885328581,147084313,4294967295,721597257,713818254,4294967295,4294967295
+	.word	459588354,274360332,4294967295,145492500,19603608,893913478,437917225,269182384,807705232,4294967295,813773334,4294967295,4294967295,21177809,4294967295,4294967295
+	.word	57025298,340181689,875215186,851761168,4294967295,563348660,10662708,844761421,4294967295,4901132,303449240,288035884,4294967295,819202756,329912722,21842253
+	.word	283273300,755833154,876656180,4294967295,474644816,6048078,854206500,891376036,684231430,593892106,357646789,44768044,4294967295,443077385,591816777,542430681
+	.word	474490901,304822822,4294967295,585959734,605377294,4294967295,577152822,420807828,4294967295,21180953,549607450,486672168,851724501,4294967295,411701304,545656856
+	.word	291922992,683742810,698499362,52619688,881268308,4294967295,476631328,404247300,189309998,593782182,885085520,4481424,460067890,690096968,462078274,895617362
+	.word	631704233,4294967295,4294967295,424937616,843330193,4294967295,17568136,752052562,818169860,4294967295,722254150,4294967295,538388228,4294967295,4294967295,4294967295
+	.word	457205009,143088433,874991826,219631897,76068693,361780688,149444384,304618168,4294967295,176603808,323543054,89531153,571749030,487608521,4294967295,718538245
+	.word	134783705,545405730,203704012,224878928,596320324,4294967295,877278282,4294967295,44622468,4294967295,714163385,51555001,23546202,4294967295,889508290,4294967295
+	.word	152057108,4294967295,811159629,690043225,4294967295,438870202,281709330,60181124,4294967295,4294967295,446452262,4294967295,458789946,679493772,308841294,420111400
+	.word	740510009,874795588,496510164,756288333,559096589,4866440,323564358,826737924,4661786,824616646,358128450,13977752,218783754,218194356,4629200,572799686
+	.word	746664516,19148954,293687876,546708185,4294967295,617370793,619501608,4294967295,4294967295,4294967295,876888140,4294967295,44774578,891619478,715306530,89956933
+	.word	4294967295,340570164,408179737,181758608,562435124,822747148,592591138,4900264,671682862,676935489,304824708,441001044,750978585,4294967295,323799492,4294967295
+	.word	883494933,4294967295,290207782,269275653,4294967295,873731605,302572750,134881721,885084745,893925568,826288652,4294967295,548148268,4294967295,17510682,4294967295
+	.word	275526210,612455566,4294967295,420153636,191669762,4294967295,4294967295,843713097,210293550,295719346,215503682,883626386,606295884,183109913,4294967295,327209510
+	.word	218936010,4294967295,4294967295,329922082,446859796,882948662,411175762,630477837,187370313,341272066,461935298,616781113,168093109,4294967295,690230028,709124608
+	.word	826452386,6044370,4294967295,440992392,48523812,4294967295,545919360,4797082,4294967295,684200985,4294967295,271063446,4294967295,52205868,442313360,290195634
+	.word	4294967295,13298001,323511332,403199193,440946977,4294967295,54795089,609530676,4294967295,738464176,4294967295,319839045,891759265,541729868,4294967295,4294967295
+	.word	4294967295,4294967295,430579762,22301125,715556409,610296084,814419986,458561361,479357012,539416889,4294967295,190891290,4294967295,740714025,4664016,458572837
+	.word	411700048,6037940,4294967295,445792928,492374297,329435572,845547062,4294967295,625770952,4294967295,411828868,580532230,325143342,85594521,4294967295,753141977
+	.word	4294967295,459030788,4294967295,4294967295,4294967295,6077074,631673152,479809696,889921666,4294967295,26388054,4294967295,697636304,411654982,4294967295,15241528
+	.word	877737512,191161362,744579504,25645636,4294967295,469967697,8603444,4294967295,4294967295,719591992,708927921,18159444,713077253,550166536,51647150,886195848
+	.word	323040068,4294967295,615318932,487592217,550150913,4294967295,53088666,320004148,216287905,580309177,881475974,144790960,4294967295,4294967295,4294967295,145273666
+	.word	4294967295,4294967295,746669497,709453900,442182178,446847776,187480354,549610805,558019864,877732557,885074130,4294967295,4294967295,4294967295,4294967295,872587820
+	.word	409602649,39625426,626827341,4294967295,4294967295,580589952,4294967295,4469268,168507992,4294967295,4294967295,270088997,474502954,887793826,597363108,4294967295
+	.word	316728966,823304832,15520038,274425388,4294967295,15352985,731418634,21423654,814089393,717298202,60184848,61479212,707312426,563500068,579037588,4294967295
+	.word	715658029,86300876,4294967295,549718714,879055436,4294967295,575036232,4294967295,307710618,327614981,18311493,295221300,14227097,4294967295,4294967295,134630216
+	.word	325458001,4608305,4294967295,881924561,4294967295,411755649,4294967295,4294967295,194586252,807933196,488858945,631509632,189030956,323141678,322987564,228196689
+	.word	810047534,337795481,739713209,295110837,170322228,583206584,457443110,823802056,843319985,878723340,293999248,573216557,546312921,4294967295,185883469,454321172
+	.word	362234529,195319856,438446933,4294967295,710452609,609953868,885262932,673670724,14964913,617801045,4294967295,613063424,303256024,680674361,745087392,886068804
+	.word	463475370,4294967295,18293972,86249914,817894741,4294967295,4294967295,683959344,675865902,4294967295,4294967295,4294967295,856830625,4294967295,4294967295,713868364
+	.word	495519432,875246852,4294967295,4294967295,329462292,584143000,877310465,135615952,307717665,463160520,618811432,4294967295,329681076,201647510,161088816,340451761
+	.word	14231701,4294967295,706102025,4294967295,604820904,752390402,13919381,4294967295,155281740,4294967295,286333741,853822149,806638020,454190101,861450498,704996560
+	.word	4294967295,764426376,579653772,22878672,202912025,614632153,876661450,4294967295,714934797,226579021,4294967295,184594709,307325580,4294967295,4294967295,76338765
+	.word	715285938,4294967295,181070338,337860025,460069378,887357972,4294967295,4294967295,224473608,23532072,683940377,21838032,4294967295,462038224,478810138,329467586
+	.word	4294967295,10032532,14852792,458369042,614472468,463738962,630203013,4294967295,560336922,4294967295,4294967295,93758614,39212370,4294967295,610601432,224856904
+	.word	190395481,496634065,4294967295,143395382,4294967295,479791316,455874184,4294967295,4294967295,4639498,841243180,412781348,294032082,4294967295,721586648,27417132
+	.word	579622918,4646568,195594698,474220057,19699082,407112337,6871464,4609361,756486401,308307634,875075886,438624912,147350550,4294967295,4294967295,27538128
+	.word	683940610,286001604,281631554,606902582,223423065,4294967295,414009504,352412070,4294967295,496240148,4294967295,496534821,730937604,881930772,12735066,4294967295
+	.word	4294967295,4294967295,4294967295,4612744,325675180,155658818,4294967295,848954956,444752513,307901522,26554948,593813924,151828098,438573785,80955188,673782105
+	.word	315132710,4294967295,851973128,4473496,847939726,543427002,354564886,4294967295,739385869,685312773,606876292,285344532,4294967295,708882736,681969444,170406170
+	.word	185410220,4294967295,46321968,4294967295,308693044,875173453,274282114,52832985,4294967295,4294967295,52220104,4294967295,329927109,4294967295,707324197,21305808
+	.word	707203888,10176268,478941205,179128973,681141632,4294967295,14830358,430199938,4294967295,585161049,148428610,4294967295,542914184,275137217,170583442,4294967295
+	.word	575449772,709112657,320300673,708852249,4294967295,4294967295,805737138,891501248,4294967295,718012689,155535436,4294967295,4294967295,8606161,4294967295,4294967295
+	.word	847413844,218378936,585425988,21318469,826849601,4294967295,895563985,293679620,325851692,496110281,182506024,4294967295,168086286,4294967295,134492816,723794113
+	.word	887396898,194725934,26558933,715966914,39479885,609028554,407505200,190070797,304231994,4294967295,4294967295,845170988,74013516,684499974,713594958,292292752
+	.word	4294967295,306599712,707307662,315152165,617698616,844367564,4294967295,4294967295,4294967295,302649945,629199306,740843780,673662244,747405764,563553300,4294967295
+	.word	709273121,4294967295,328390064,294017092,189572640,4294967295,9586100,889488004,176738350,293622160,4294967295,675571277,4294967295,85616844,4294967295,4909578
+	.word	178705170,43608212,17175192,683951873,4294967295,4294967295,879429906,697612496,709265193,476881428,176243534,90454553,183327272,4294967295,4294967295,227820564
+	.word	5060298,362430917,4294967295,630463105,539256493,848825037,182266496,563812392,539775366,550148441,44876164,812008736,27808196,562438850,4294967295,4294967295
+	.word	193540416,470426168,6703956,26818740,4294967295,12928805,4294967295,4294967295,218191180,189292813,4294967295,696332424,696656082,886227989,745294249,891691712
+	.word	4294967295,461899977,446785750,21407505,12797204,212551458,26522244,4294967295,4294967295,723783706,826754057,403859112,559153294,193528276,574884557,721510726
+	.word	4294967295,891955584,455877670,4294967295,4294967295,190080384,718346065,437802793,4294967295,161034561,826319373,896082310,17244340,187349000,275547790,4294967295
+	.word	709898808,579948698,807680646,4762420,317507670,4294967295,474628906,4294967295,4294967295,134900296,328292558,729953802,189179449,4294967295,439130793,891312396
+	.word	338313688,4294967295,756289561,4294967295,190253658,894994765,4294967295,274247706,447441474,155616825,325216688,77813169,189336396,4294967295,4477708,552233028
+	.word	713888320,4294967295,458285608,315156610,145543217,283136185,4294967295,4294967295,204036936,807016012,4294967295,805835021,4294967295,188758601,307024972,308858936
+	.word	4294967295,882545041,4294967295,738474788,10129944,444818513,609509812,13321030,709265930,559723813,763438288,4294967295,4294967295,4294967295,6959386,896086274
+	.word	4294967295,73212461,275272514,550281221,763828296,478833220,731126286,315263793,303655052,328370765,283267610,4294967295,817893652,4294967295,711264857,187343929
+	.word	609309448,269005573,292095148,4294967295,328354241,612565721,4294967295,153512648,441996609,672752780,876872206,180710066,739468745,160511508,4294967295,570741156
+	.word	325651238,4294967295,537026828,4294967295,472017428,4294967295,60434864,306858073,861415428,4294967295,189804856,85774537,4294967295,874927624,136665689,4294967295
+	.word	4294967295,4294967295,214225698,895629320,613495574,443287856,88683781,814266561,438489402,161153480,732079553,891572429,328385590,847434176,446316728,143342137
+	.word	822478505,445318993,596973218,4294967295,550109444,707226185,752698530,592230537,4294967295,405488456,542377813,362891910,730409088,5022166,688664584,4294967295
+	.word	4294967295,27793718,705901112,491529233,4294967295,405447865,474622000,627515396,4294967295,805979438,461539976,4294967295,4294967295,4294967295,340320672,4294967295
+	.word	463489300,4294967295,194061745,471411365,453302426,543188652,419563797,4294967295,4294967295,362303629,4294967295,820643368,491259161,881021517,851708116,492397730
+	.word	302562009,4294967295,4294967295,4294967295,181160194,4294967295,564790472,218837250,815203844,294338948,550834261,675361306,178285068,549492490,317253280,824611912
+	.word	228213773,444746581,732082194,615136006,4294967295,470602032,228665909,4294967295,891623084,612783264,446859832,814092928,731036233,705868048,539234714,39629140
+	.word	338477740,551773866,746980920,291661344,4294967295,819464404,176700089,719454984,715198936,882557100,4294967295,709674272,4294967295,675808589,421683490,438462130
+	.word	4294967295,92869908,338313606,424174629,593791780,684265498,4294967295,320484482,713628461,134899153,609683796,337852081,4294967295,583083814,269960980,740629328
+	.word	427960896,4294967295,4294967295,606220628,304638358,181163056,543450548,673473680,4294967295,204105169,721608962,878072129,170615305,81478468,4294967295,854202953
+	.word	4294967295,707540112,169108949,679654978,579549188,613089432,841132720,4294967295,189195305,893915209,4294967295,492048962,4294967295,4294967295,14963289,74234546
+	.word	614641716,488793377,714950020,55059237,571259140,23368154,4294967295,148918610,4294967295,162137644,160912400,211471170,4294967295,403186308,4294967295,25440976
+	.word	4294967295,180620050,4294967295,4294967295,4294967295,811876821,438085206,857344457,4294967295,763924493,894701581,4294967295,274155316,4294967295,135611157,147609097
+	.word	4294967295,748096057,4806090,4294967295,411263508,711014968,218850761,4294967295,170551881,314730518,442526248,203711956,4294967295,193417505,4294967295,4294967295
+	.word	4294967295,557851032,4294967295,861979790,454222921,4294967295,753666217,17636045,409524040,81400145,881464752,446714394,74073529,4294967295,877142102,4294967295
+	.word	11286052,557973896,756851136,744964418,6963642,8598233,744950608,860955077,881931444,341248697,538794440,679657529,402937682,443173145,496115734,895628360
+	.word	618734340,446879522,4294967295,84201677,625434628,16933141,874687150,14961413,161023628,4294967295,93671845,746677712,294128324,439134773,170281801,4294967295
+	.word	186737288,496063044,705481130,340476738,849905028,883426517,4294967295,714611533,891329230,161764754,613029977,819202261,218190604,4294967295,4294967295,453316696
+	.word	4294967295,77740697,4294967295,4294967295,319447109,492978496,227838417,303875781,729981328,4294967295,181687808,616650010,861028744,4294967295,886786372,4294967295
+	.word	877089290,60430638,572713641,176251478,4294967295,353010476,841356842,812026512,721553741,4294967295,42087992,559284377,675752538,571631240,190613930,4294967295
+	.word	302650192,38581556,807687724,4294967295,617777928,4294967295,337195157,22484552,574630357,558277792,170345225,143352846,60365448,747409810,4294967295,616784578
+	.word	40414038,438458152,349706068,478309025,751853713,357697292,222847234,4294967295,625173578,4294967295,826427726,891987138,425530626,6974028,721883912,194716225
+	.word	89538872,848452140,155739469,883315749,462772773,4294967295,890320548,4294967295,153493530,442849848,9224870,328937508,876884688,673454606,4294967295,317329977
+	.word	4294967295,4294967295,698659362,807818410,218195400,4294967295,4294967295,811204942,476890818,270984902,4294967295,268846900,558244994,813827541,412224020,4294967295
+	.word	4294967295,874922661,4294967295,4294967295,873020040,4294967295,315233072,184604428,673460996,193548360,4294967295,39209813,453028538,282252113,486828194,545404737
+	.word	4294967295,320035200,424159012,596824489,826423314,161170816,606496938,848758928,4294967295,92878984,756297921,4294967295,76157773,676934401,143415714,848713734
+	.word	763671072,751109957,539420842,537268872,4294967295,4294967295,549586710,271202489,826476041,891565186,161165650,218190136,443065396,458793728,4294967295,22504648
+	.word	894904497,547377932,21374789,4294967295,4294967295,269234774,438997266,4294967295,462946564,147081242,227952264,4294967295,4294967295,4294967295,4294967295,807737782
+	.word	577386817,354628692,341606805,77805241,4294967295,878789262,751568145,455744288,328291908,446763698,4294967295,732432556,723663160,4294967295,755106570,4294967295
+	.word	705214602,585771192,441731097,72796936,719855746,707208410,323500832,210251862,537712036,423904312,814273956,145122978,17094052,4294967295,9922068,4294967295
+	.word	594282788,8612556,680280068,359011418,539791754,4294967295,4294967295,194677169,4294967295,176251406,193221009,169096020,4294967295,491808080,697763152,462636074
+	.word	90323728,461675094,184590745,283169584,4294967295,307913088,438462802,218943938,4294967295,4294967295,627323041,4294967295,81275716,496649506,606822604,4294967295
+	.word	438458920,201642800,497625141,730937928,690761769,742993992,596922414,169265497,275140634,338475158,4294967295,27538098,4294967295,885137952,719098930,224408889
+	.word	493446337,4294967295,19293333,4294967295,721753868,478807193,4294967295,441208913,181724801,710205488,203900218,430070312,4294967295,155239181,86664526,4294967295
+	.word	357111234,679503429,606480536,442131472,673715592,845236910,4294967295,826676561,60201234,303609620,4294967295,809765388,614621568,545445934,229050933,438625845
+	.word	457263940,4294967295,273770162,304703670,170403225,189293825,195451168,4294967295,609887041,168187658,723331458,6646160,9070021,155469613,612767832,545305780
+	.word	748119170,160715154,405611029,4294967295,10676756,176832921,4294967295,806507852,177879889,5972817,4294967295,179067329,135606873,48933401,4294967295,4294967295
+	.word	8934148,4294967295,226962004,860952136,4294967295,543450798,4294967295,147359386,609625889,756155784,812040482,315843633,424731908,688956166,4294967295,4294967295
+	.word	598411721,358113293,618733753,714163672,442257448,169521672,303616142,705507909,4294967295,857150740,328599185,4294967295,176183761,751576580,810223885,739054157
+	.word	72786578,357711897,4294967295,814258594,543427214,877013073,5789450,731390369,4294967295,891703336,4294967295,4294967295,4294967295,4294967295,631321252,43406084
+	.word	614479033,190234937,873140750,143059490,169489977,880882838,327209132,474638626,4294967295,13773653,12765466,4294967295,710713888,4294967295,891704645,4294967295
+	.word	721696953,492060728,314723105,4294967295,4294967295,764974124,192991501,706032196,314705586,4294967295,883034549,457352249,403313176,731268389,4294967295,423840586
+	.word	269272206,4805080,4294967295,616917061,4294967295,8968634,185882636,722241706,156632368,438970969,549612234,6965518,204038476,145371673,478841650,4294967295
+	.word	195351073,4294967295,219636822,4294967295,13784905,893518376,543951496,4294967295,550507161,178948620,4294967295,4294967295,4294967295,458434641,541862306,327824464
+	.word	673462021,764617804,756199736,424962194,19666344,894714049,8566550,742803544,4294967295,136656560,325206042,550115073,874993864,493046600,826541521,478220978
+	.word	4294967295,315693592,457704228,707531274,218178265,893732933,445186886,4294967295,204228021,463012117,268984740,4294967295,4294967295,268974292,4294967295,79975634
+	.word	4294967295,176862033,723780761,608462508,4294967295,4294967295,159793428,883348486,4294967295,317511890,697712777,18178765,4294967295,585259097,453335232,4294967295
+	.word	594321580,893403529,717489702,4294967295,270034372,453710592,295130690,306604113,444727992,4294967295,328349714,4294967295,4294967295,338059910,357370322,849828388
+	.word	191118112,303487186,18626180,4294967295,436365909,598118722,4294967295,274499116,320657444,81433425,707544366,475301433,354505484,210397260,211568332,22308357
+	.word	562311204,445726937,4294967295,4294967295,4294967295,676416269,619317418,340605524,268981004,440685082,4294967295,4294967295,581736066,4294967295,4294967295,462768768
+	.word	4294967295,872694446,348848978,763413640,577026882,881366733,826552836,321689250,184866894,152117965,4294967295,4294967295,271272153,584213544,562114901,4294967295
+	.word	475027216,894612520,740575641,4294967295,153487156,226570772,610732342,51669174,455088406,579004834,317496000,4294967295,4294967295,445717012,4294967295,740639174
+	.word	4294967295,204253874,675547545,492638784,319974081,323020326,721855234,579869525,546727621,883296945,714685188,717391161,4294967295,840646948,629232964,881464897
+	.word	564222245,306632450,4294967295,717399089,438901589,4294967295,152840610,353458393,9982724,543581224,89953736,4294967295,4294967295,318913333,891499138,558196096
+	.word	420094137,4294967295,22884936,880969302,853689398,457221670,60035477,4294967295,4294967295,806561484,4294967295,4294967295,178959930,4294967295,9581364,730991026
+	.word	4294967295,546066438,573006985,676118828,19705994,454107318,606738841,546965326,488460550,591620480,296225444,574902722,4294967295,210842257,543818201,462690836
+	.word	606941364,4294967295,696529408,4294967295,4294967295,879046708,176645697,461689026,463033382,593793080,4294967295,362941105,438444597,4294967295,4294967295,178802714
+	.word	145361744,806629522,4294967295,814233622,593782790,545339608,4294967295,596648086,707533326,338235796,13378769,4294967295,403182344,478363737,681120514,706308357
+	.word	181691010,285631573,707217188,744765456,610674337,841654738,4294967295,757467908,840503976,4294967295,4294967295,187343630,723543246,717243673,889455270,13145370
+	.word	94782806,579263234,4294967295,4294967295,176732214,4294967295,272647641,560202926,4294967295,362895794,606824780,881017216,328874000,4294967295,419570370,496503109
+	.word	4866520,4294967295,887629012,764978306,721593388,55395497,4294967295,323795154,462641666,4294967295,843634702,324219394,4294967295,854100294,894514480,8919510
+	.word	4294967295,630915340,895879338,539398826,308850746,340570710,539253126,891310220,614858933,155452954,90444209,875041174,875184328,94638486,4294967295,354423190
+	.word	705093906,81318232,4294967295,320902810,715720133,8608593,407406218,152724520,715574020,4641320,296129202,626139905,320279348,135045552,861341956,439018673
+	.word	849746484,671491289,746741778,4294967295,4294967295,546722561,4294967295,478201562,890329545,218827532,411735130,810190094,4294967295,877054038,548156066,21809605
+	.word	39637548,328741057,4294967295,4294967295,874946742,697352360,203825880,186332170,731982380,4294967295,153445794,27799702,4294967295,883622340,71908148,4294967295
+	.word	4294967295,304755238,13390084,855792072,472008393,15346244,697614350,10241236,4294967295,874975784,304573125,4294967295,4294967295,550277761,885670176,464144514
+	.word	4294967295,160453900,826350089,625041613,683950848,77150937,13944452,4294967295,405050937,559985446,4294967295,8573518,840522062,710419212,340341378,222733104
+	.word	10629938,60182705,626465545,315152602,26826060,4294967295,4294967295,592876633,545722394,558675202,710298440,4294967295,40675918,4294967295,764823810,191284296
+	.word	11031300,4294967295,191117329,895000965,4294967295,765734948,203827732,423696210,614944824,272656081,4294967295,457512537,877208269,4294967295,157869390,541865045
+	.word	612783938,180637744,4294967295,4294967295,885146273,4294967295,55855492,882905740,25448625,741087502,4294967295,819610916,606561450,4294967295,707270969,4294967295
+	.word	14468742,4294967295,4294967295,4294967295,315381250,283862194,4294967295,8787793,325452314,429086208,874780050,464005300,877343241,584280340,629277078,4294967295
+	.word	823791885,354490196,296141893,605512841,4294967295,4294967295,136984368,717234981,811872898,4294967295,283952150,224211024,459303216,338302540,316213433,203707917
+	.word	609702658,4294967295,459589410,817898128,428951172,4294967295,170604369,4294967295,4294967295,564410582,709960281,881938604,459841562,11286742,719397670,4294967295
+	.word	8809046,625783077,317542450,4294967295,177255001,327718996,423806793,4294967295,324061337,696338885,321284805,5059280,40423705,732348610,187114177,584128328
+	.word	4294967295,843590317,438977286,176556885,444650022,4294967295,4294967295,4294967295,189277230,890516501,537273092,4294967295,539125005,323785169,844191056,169652530
+	.word	4294967295,10240180,329695270,4294967295,176763988,709665292,709642666,296228910,23479608,4294967295,807582249,4294967295,295311376,885670081,4294967295,563774888
+	.word	218182485,4294967295,135055048,4294967295,753471744,318924417,458005026,4294967295,222315801,143155604,22483466,61221077,357975812,709978504,722247842,583797445
+	.word	593637433,184952608,12756664,357958169,294703526,881230389,4294967295,807578284,674019914,4294967295,581634265,46965456,715950668,21150297,4294967295,323490209
+	.word	459087890,839043720,302176048,4294967295,453705988,210240185,4294967295,4294967295,182243906,479946244,4294967295,316723768,4294967295,608458178,721821880,840061197
+	.word	407130161,710320697,7087540,4294967295,683939585,211290957,4294967295,222638160,274163286,178797249,4294967295,4294967295,190628128,186911156,4294967295,227934741
+	.word	493667464,874923334,453253973,4294967295,4294967295,4294967295,675685120,4294967295,4294967295,625291394,562431685,22504618,854212866,283247313,442581302,308864417
+	.word	4294967295,4294967295,147608657,706549005,493651461,572799796,4294967295,4294967295,717826886,891691138,4294967295,4862794,176241241,807556561,4294967295,454121690
+	.word	4294967295,740877574,57162020,204255764,543819161,4778324,190373928,848890500,593791822,9589521,329920722,4294967295,160511313,4294967295,39363001,4294967295
+	.word	755034436,472541361,715274784,135049748,631898248,4294967295,21406469,893716690,4294967295,4294967295,176207417,861409738,673464729,4294967295,4294967295,4294967295
+	.word	4294967295,455436374,710713356,4294967295,89994792,827467856,319218741,4294967295,94951726,4294967295,193221134,22289168,4294967295,4294967295,419728004,889231766
+	.word	4294967295,180430420,672703246,877211700,606364301,60380493,4294967295,180922010,216327824,316444724,321706030,839328292,134619858,27699876,323012998,402931860
+	.word	722823298,546083500,718866213,579031098,704931982,4294967295,88914500,860363040,308841228,4294967295,610952649,757900430,496058568,4294967295,48011912,4294967295
+	.word	881473090,458016841,308864654,681394244,480970546,4294967295,176635924,363223556,4598298,271247884,630654664,13910168,4294967295,673637962,458008658,841652556
+	.word	187042458,4294967295,4294967295,890426378,618748121,677397289,805980334,25694889,879376400,496117282,445258498,26912910,764420654,4294967295,43405829,612786822
+	.word	14829908,135940364,814110770,730251338,4294967295,890905606,14473361,593762393,4294967295,9225366,351060646,309118390,547378988,445175938,860144064,424153410
+	.word	220604193,812270632,4294967295,8870468,722659401,4809044,21803178,4294967295,27699346,92415564,4294967295,156016653,315366018,883312821,681994448,405318405
+	.word	480406069,439174856,681129049,4294967295,4294967295,711762988,824609044,186661654,4294967295,48417049,8840882,286996290,321705090,442291218,876654932,879109169
+	.word	4294967295,715667673,446859862,4294967295,441147944,4294967295,4294967295,407654913,707343544,446782010,294701774,4294967295,341489458,731269282,6607662,316709586
+	.word	4294967295,721818882,349247153,4294967295,338446021,362459281,407131217,304550452,574908500,23225864,822401442,856760492,436921604,4294967295,541940096,4294967295
+	.word	858009652,805970436,764578345,4294967295,218892968,595737288,453116712,4294967295,8604116,4294967295,4294967295,4294967295,453814944,539185933,181429962,690160940
+	.word	854272548,291595469,4294967295,4294967295,419569684,457203973,295717548,4294967295,813849122,17608884,4294967295,671236942,718573594,4294967295,4294967295,751609409
+	.word	826544140,308695089,23859656,750850834,493094073,189270458,4294967295,189084225,324014489,828522914,10236420,195109552,273285520,436900425,54814254,575015753
+	.word	322973849,4294967295,22504592,445420086,4294967295,219473282,177261326,4294967295,4294967295,201634360,214192153,190351692,893817938,619481414,4294967295,543237556
+	.word	817907882,4294967295,753701418,4294967295,409477177,289479128,746718994,488776408,583330434,885149714,169661777,704922438,8536468,463095978,4294967295,268974916
+	.word	707225093,283677494,162150738,625377433,307907405,854086698,4294967295,577047350,4294967295,697602625,819152512,715952684,194720001,893727824,889238218,577121076
+	.word	4294967295,22287792,4294967295,412239577,304569126,756245516,4294967295,4294967295,4294967295,847661186,462066001,136622650,4294967295,719407450,182732889,4294967295
+	.word	626856386,430647300,543951534,4294967295,170534330,315135029,4294967295,225223169,696656388,181950273,843483826,411567317,542860681,46424244,4294967295,765890632
+	.word	4294967295,683933840,275147348,457769097,885072048,407593506,4294967295,18686661,543447097,4294967295,696533004,4294967295,25474724,4294967295,285259428,584878217
+	.word	606386998,438114002,573314734,707306286,4294967295,826347857,810034881,597303712,4294967295,4294967295,413296180,306229905,894517453,457254096,352737368,439175877
+	.word	209765068,461443624,190657089,46975286,4294967295,9591249,545469206,17060312,4294967295,4294967295,446358609,492047172,4294967295,441091625,39605521,861450276
+	.word	270681805,419728056,4294967295,406898330,4294967295,719096388,4294967295,444633652,4294967295,459407880,25733540,210388418,4294967295,558310593,673358424,593801346
+	.word	698955044,328731062,614950996,756877736,822379662,4294967295,719373604,4294967295,895632801,4294967295,442001098,492978984,709125646,572991193,881924816,446519812
+	.word	22615820,4294967295,625214636,308841268,545415188,812261794,17980205,4294967295,805483016,457270824,4294967295,4294967295,229126818,715147436,4294967295,10671630
+	.word	819599408,4294967295,685508776,4294967295,594315590,4294967295,59298984,5034290,886645445,475753000,721564481,732341457,813828534,4294967295,51779894,4294967295
+	.word	896075976,740823512,92709460,471090388,317493792,4294967295,709435809,4294967295,4294967295,6825398,81404753,355291149,9048600,362960908,288108706,4294967295
+	.word	319428056,492839065,329695874,93528497,442245762,741132458,4294967295,824617636,696566914,4294967295,818956456,579635638,338321552,323783058,597053445,4294967295
+	.word	308695826,319200002,152397184,5981996,419587393,4294967295,420112456,4294967295,890327432,4294967295,683741962,753033768,46287689,273234624,872812884,144049881
+	.word	806564361,4294967295,186066561,595906948,9094586,441243938,765727276,596650124,204002060,763928769,630588041,271338116,874979508,455300185,580702368,626467878
+	.word	747004966,827756834,822125718,429953705,307923514,4294967295,440949577,61000364,134796044,59020976,810983508,755015884,222863834,4294967295,885654832,4294967295
+	.word	316238468,496539329,4294967295,4294967295,160039184,323487949,323379717,170158612,170607885,411699717,743211532,679903801,4294967295,562436386,51730572,876892208
+	.word	17195268,545915652,178706226,169267976,4294967295,283843106,224922041,690788426,13244233,4294967295,877220140,608448601,215491225,78145221,458490628,4294967295
+	.word	4294967295,4294967295,822348422,583309109,26948105,211314132,4294967295,27412938,696533152,457713414,4294967295,881268385,147638282,625172938,606345996,176980436
+	.word	823398838,203113740,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,285219660,472044825,23214362,885082826,60170950,439167120,881021004,454714694
+	.word	4294967295,323793089,425763654,224486865,805454100,4294967295,705848877,4294967295,551691320,149571673,78012560,814256564,27810124,4294967295,675365705,539666222
+	.word	134800840,143280960,362418577,572954964,676137549,52042504,13375061,315265824,475013785,4294967295,843065877,444760752,739860936,407131673,274125633,458310410
+	.word	4294967295,462063816,538194628,350374658,323490201,580008756,39544361,550281430,731322378,227019176,4294967295,182225206,881459789,4294967295,857147529,756101956
+	.word	156526978,323557185,558327041,618680489,707029164,152713241,294126212,143405072,4294967295,470041814,325660730,4294967295,4294967295,4294967295,854075605,730285129
+	.word	755249222,194658350,204006858,614927172,273462786,17061037,4294967295,673628454,354496660,81421512,4294967295,593924121,4294967295,337857364,895895874,60439110
+	.word	4294967295,4294967295,891566100,4294967295,23868584,86791337,886769841,4294967295,609298073,348684436,4294967295,491012120,873899572,4294967295,363514028,176607833
+	.word	152438072,4294967295,4294967295,891565140,625029320,218178008,571253972,4294967295,4294967295,5777037,405037713,4294967295,319607968,4294967295,441272404,320243365
+	.word	4294967295,437838996,4294967295,579273508,27799722,4294967295,879100180,4294967295,228020513,729950285,211184212,5554840,680073036,4294967295,4294967295,618818242
+	.word	719636226,723937568,719848198,4294967295,593634050,203057672,13386376,176212758,547383748,402805256,690251136,557852121,876885698,319195782,617796648,304814926
+	.word	721490264,596914325,26794254,15409700,480055378,9124676,562435393,805844677,308101173,4294967295,4294967295,609913646,136664504,461559120,538202329,614084793
+	.word	191318817,822740421,303879692,76243492,307783125,564409380,537289941,608905229,4294967295,187083540,596785160,631506373,4294967295,143320465,490914138,316727476
+	.word	23345969,875186346,609310504,23336378,4294967295,411714713,4294967295,580544705,294257028,722934018,440685088,895531186,4294967295,218497864,673622201,597053700
+	.word	672739673,559309954,4294967295,550167558,147325576,705087704,15293254,94020174,597333416,4294967295,25641160,287488057,4294967295,4294967295,487719190,470047268
+	.word	560727212,319214777,17601992,328796812,684235042,17511236,189020993,740832073,445251737,718869825,719382026,875080116,895656354,4294967295,709099992,885560372
+	.word	730121389,17522888,94841428,872596812,224674829,213935817,295209670,72132301,153506113,463145510,625115417,4294967295,4294967295,4294967295,4294967295,458490373
+	.word	4294967295,454695001,743220305,847432354,25305620,162144802,4294967295,889337154,631517334,741124562,454756632,618452098,4294967295,4294967295,805873046,683679896
+	.word	811217409,4294967295,826459438,77140404,881475653,17046294,707020582,176243478,891958341,593924904,190921016,23217960,454124744,9968333,413303321,563417741
+	.word	630622858,4294967295,26824974,17118021,80925513,720143634,210199632,315396112,285691930,738781516,308296500,176579217,690787617,9583321,4294967295,46963402
+	.word	560239392,285892612,143409804,404932281,60430925,746658264,4294967295,845432884,354881592,56912048,4294967295,4294967295,177263441,616635188,713615520,4294967295
+	.word	715212580,4294967295,86401672,26547788,4294967295,883430030,893465874,4294967295,873013670,747417810,11350660,307653205,613489369,218773529,81356102,822751368
+	.word	404539044,4294967295,146851466,4294967295,309113905,93589940,493656354,718537220,885131861,188822808,283854905,537699982,4294967295,4294967295,840310998,629224724
+	.word	203835049,4294967295,12756634,847272081,696848776,463554870,424450338,4294967295,210265536,564793390,698779794,459085121,489465925,89403610,894711364,891429301
+	.word	4294967295,4294967295,895623694,4294967295,4294967295,4294967295,86806954,316358848,218498360,11220177,882922673,169687316,4294967295,4608586,323445953,26777257
+	.word	4294967295,539829933,605696153,214467290,4294967295,327338370,807621932,886123153,23479578,159401293,4294967295,4294967295,27538054,160479798,303254156,606872789
+	.word	190611920,23376026,481071125,446878466,709117344,4294967295,732442882,4294967295,744530457,889594498,707151018,316676784,39479602,4294967295,614486406,4294967295
+	.word	878069448,4294967295,4294967295,4294967295,883640356,463152178,454822101,4294967295,424461572,4294967295,302167608,885205524,688009984,4294967295,4294967295,459834650
+	.word	616694568,458319428,4294967295,183312438,176249681,579242134,316803636,583049926,204263724,711517194,328766094,4294967295,461460040,93759012,159778377,875181636
+	.word	4294967295,39637293,354880340,807576205,478746265,355119140,190070873,597300558,876888468,4294967295,4294967295,4294967295,4294967295,808076428,686637184,690360665
+	.word	19273400,4294967295,4294967295,327353038,4294967295,328600198,340181077,612422829,441767426,316707386,4294967295,593814981,680669698,805573206,874165509,685319225
+	.word	423701316,9581081,625140137,476382809,747014714,161139106,186657452,9255508,805573264,180637722,731253061,463624496,340351820,348947120,4294967295,462754870
+	.word	436770581,4294967295,890315158,630413390,543249161,161820694,680659724,4294967295,168055374,14292817,4294967295,4294967295,4294967295,595735624,4294967295,4294967295
+	.word	572207945,609879820,731284658,4294967295,718868800,182198930,606908586,4294967295,4294967295,564397444,860391694,4294967295,190188298,718424408,876660429,877070033
+	.word	423756560,423649552,4294967295,193383048,874059436,875172173,457448273,738346798,294193797,423780360,458417456,480905765,60213958,541779020,425527876,462476592
+	.word	875050184,423772416,438494889,4294967295,576744076,807983240,14893364,596316584,423764504,845427361,429606025,581637538,228141141,708881197,722241868,315133978
+	.word	4294967295,4294967295,551555769,608920865,579265573,14325256,4294967295,4294967295,328929857,496046420,8799941,880857490,593759020,194656560,4294967295,885084360
+	.word	574896928,57034920,4294967295,539250893,52828468,4294967295,454349016,4294967295,843793857,195693009,878127188,9191572,490808529,295719376,25825680,302405841
+	.word	877966978,4294967295,328352160,840386244,889917516,4294967295,549619478,756443146,405333141,573269414,4294967295,683811600,15225608,4294967295,847697990,4294967295
+	.word	424190784,353534796,323406010,321554604,4294967295,194062032,446785060,894894660,190104961,4294967295,608252214,4294967295,4294967295,824583812,4294967295,4895528
+	.word	182731449,13166902,680659533,4294967295,4294967295,445158457,445257490,4294967295,4294967295,360798608,4294967295,289859746,714944688,26944716,147481088,4294967295
+	.word	4294967295,25837828,170451598,182231760,548047290,4294967295,4294967295,683803160,843334700,4294967295,189579532,571920537,5727796,4294967295,683819016,4294967295
+	.word	18621092,8599313,17242452,747417648,323793410,136913560,4294967295,21448904,4294967295,22167961,4294967295,580728021,715211192,439143046,214718984,880948914
+	.word	4294967295,56813841,631419138,809968657,4294967295,329699906,747147278,143413632,826679808,578828441,4294967295,4294967295,4294967295,462080168,271279506,4294967295
+	.word	54673816,424822826,696260913,819024453,625238022,188819280,710281560,4294967295,7094542,189196810,48392880,545678405,309121410,194717218,719093896,46799161
+	.word	686063794,189188866,887247122,856961236,687943974,822477076,4294967295,170355025,189179930,155476385,320670100,4294967295,318821132,4294967295,227848725,454167226
+	.word	13279749,731256872,537661717,4294967295,88511314,285357845,879102484,826720260,88951053,4294967295,631517397,4294967295,411586688,4294967295,731190722,697643585
+	.word	885215242,438854966,4294967295,22306960,709430061,4294967295,4294967295,430180902,155208524,183166024,480860354,308994062,4294967295,597985461,286437398,4294967295
+	.word	612407125,411713540,4294967295,4294967295,881023426,4294967295,6050193,4294967295,11291044,293750229,4294967295,355132866,7124657,39376314,807715238,51777813
+	.word	715960356,319893716,4294967295,18113748,4294967295,550146856,78124473,323792946,4294967295,308962350,441771093,216098129,134787412,17508804,438917306,411866802
+	.word	579469784,195310166,4294967295,719505481,4294967295,4294967295,455775272,327861293,753140228,4294967295,4294967295,43176377,213996104,302813622,4294967295,742842912
+	.word	315134681,753158329,4294967295,419583746,321260340,562041224,17643844,4294967295,709969320,4643385,42605357,4294967295,614618125,21162252,839440644,4294967295
+	.word	619487414,170285624,460066897,877955661,26940850,843317718,195463690,181420309,717817144,160708129,4294967295,274512449,458784904,4294967295,4294967295,4294967295
+	.word	713621690,303607956,547555980,889917762,190080450,805976370,428351636,847954981,446307137,856326468,710682705,742672832,460065320,281090768,407462536,4294967295
+	.word	282683072,891629605,696394178,710164492,318898648,61229348,805447373,549611177,4294967295,134888008,23212570,5063060,161499404,453011077,39531282,424151322
+	.word	94802194,826418193,4294967295,715278392,281149972,4294967295,4294967295,454691594,4294967295,878052884,822513672,541861313,446324752,573389094,887278242,177638105
+	.word	55359012,563744778,194558658,4294967295,470356821,4294967295,17064588,707215620,4294967295,273761722,286052398,160907605,496571016,349831953,73031954,881459342
+	.word	714545690,61217448,710436290,211571137,4294967295,885072404,740858297,27412140,860359109,841358000,4294967295,4294967295,72008013,18539912,4294967295,4294967295
+	.word	21408530,180442384,574927701,877045280,424453670,23208378,751313945,39213401,350011541,187468077,4294967295,27875629,428921169,19026222,441221430,563548417
+	.word	14837042,4294967295,59979057,538137353,690185292,81023186,805585580,563426372,538204613,894607746,4294967295,885524132,273353240,320956854,315363985,575459338
+	.word	723521962,185885345,211510284,23472964,874791628,143197592,671492944,4294967295,5722386,848381636,819142673,4294967295,185383554,14369962,706517260,4294967295
+	.word	718872665,697509248,4294967295,4294967295,738660634,4294967295,684933193,4294967295,4294967295,53223830,193200848,274228276,819085589,80945881,4294967295,496502020
+	.word	4294967295,4294967295,4294967295,4294967295,4795221,4294967295,874992200,4294967295,454199641,4294967295,856863401,14820921,613882676,328618020,747004097,625042884
+	.word	179063468,4294967295,707540305,713603878,294268944,411570840,4294967295,747407916,4294967295,4294967295,318825926,4294967295,4294967295,4294967295,4294967295,4294967295
+	.word	457703624,679561624,843504168,4294967295,885653648,877298184,84107572,4294967295,17606278,328291533,4294967295,143177344,4294967295,4294967295,537158276,756163393
+	.word	320483364,4294967295,739521049,13981208,714152716,690250912,4294967295,182508370,744972872,4294967295,488695494,550114122,338433457,4294967295,4294967295,4294967295
+	.word	4294967295,690365186,4294967295,709323056,4858640,214189876,328615105,274516436,764945412,315150529,630534213,178303634,4875853,51728557,886246057,597055526
+	.word	813906004,4294967295,630346760,194316944,4294967295,321284132,709706829,4294967295,308893720,71656112,575727016,4294967295,4294967295,17064116,181985568,845240744
+	.word	743448977,459360442,168049493,44710692,157304264,879285570,295260320,26950184,9180597,4294967295,321262650,493099522,717309736,443066146,135045708,4294967295
+	.word	890310989,429040272,4294967295,13900312,304237197,14960406,4294967295,315132570,303601369,4294967295,4294967295,4294967295,4294967295,282813584,4294967295,176210733
+	.word	885068424,26515982,563417164,675678520,61221428,4294967295,4294967295,679922437,673330984,304232081,455266330,438850905,4294967295,614650636,576502408,446208706
+	.word	683952898,454297285,756424709,438835990,4294967295,4294967295,15361328,423633040,4294967295,709905225,709968652,476342294,185231693,545313549,281152210,147383306
+	.word	80308501,814761428,4294967295,142631436,4294967295,190212682,453804202,731396100,61233328,826688552,4294967295,883082946,216795825,4294967295,874064012,214697481
+	.word	4294967295,491798681,705044666,268587544,885080324,819595848,176841776,4294967295,597039394,490939929,4294967295,61232682,4294967295,617350789,315131700,717494873
+	.word	462460456,472049237,429401282,4294967295,81339076,542122796,861475200,805454538,4294967295,4294967295,819204608,579012404,4294967295,4294967295,25465390,882542797
+	.word	807833874,841373864,323160620,187050837,92942661,176994902,6870457,39630514,25445812,134882060,194468097,274550864,5780121,76289682,826426669,4294967295
+	.word	496542400,751584449,4294967295,407677602,439012166,18493721,625029961,4294967295,4294967295,319874253,447399105,474765320,5036584,675701008,168092205,339822004
+	.word	27797132,4294967295,890385697,581358660,546702516,4294967295,227062048,10631989,302410386,12805641,445802070,895005826,74242600,4294967295,4294967295,182999352
+	.word	411590660,721904961,875250858,619467073,338379928,630925762,613503756,426322074,606352006,23226700,4294967295,4294967295,4294967295,732336170,4294967295,704815890
+	.word	423888057,318846616,195479892,26617489,338191813,4294967295,4294967295,94516533,5031212,828901708,704944654,4294967295,562301318,319829765,447408644,564307988
+	.word	324580388,805587598,84103608,4294967295,162050338,581307172,4294967295,325597368,747147310,584878280,459348776,308677265,756491268,275473826,887245514,4294967295
+	.word	293652110,709689929,86663341,46810404,4294967295,822267913,144795278,4294967295,472715850,353145941,4294967295,4294967295,704784984,841242829,4294967295,438851866
+	.word	631505348,4294967295,571872021,681723692,4294967295,325471012,4294967295,443335958,454301441,4294967295,306735821,454300500,630215820,4294967295,445434530,626857000
+	.word	317524518,537290038,738600752,4294967295,430004561,214704214,4294967295,323787202,204266028,742942145,203713234,819217444,454121732,807581256,826361252,323405913
+	.word	4294967295,169269800,4294967295,155235632,713176090,613494964,218931916,878396456,306754644,4294967295,4294967295,4294967295,26809992,27795909,4294967295,21423250
+	.word	4294967295,4294967295,14833938,43168433,354510277,746807377,195692848,273049109,549594137,707193384,4294967295,4294967295,4294967295,4294967295,564418606,883635746
+	.word	681076748,819085986,4294967295,4294967295,752683281,4294967295,822163796,4294967295,4294967295,357709346,337818288,14948018,4294967295,445715220,617261858,882554370
+	.word	4294967295,169491033,4294967295,729957664,4294967295,4294967295,438130833,181159169,4294967295,320485124,168352014,458557592,4294967295,4294967295,711278638,222586305
+	.word	4294967295,329789460,17045333,86398276,751044816,183157504,425500800,440681216,4294967295,4294967295,169690824,4294967295,751603722,315709264,304769200,18690185
+	.word	4294967295,283935268,4294967295,564142788,480973584,193642888,4294967295,684201249,446486017,340541454,438118933,862001584,21807558,4294967295,4294967295,488270082
+	.word	145306645,489302788,160520744,671498500,404363801,559101000,4294967295,321082124,170549517,187337484,4294967295,187304778,421581642,4294967295,4294967295,4294967295
+	.word	606509737,537354533,593507078,718604432,15226026,176556630,170705302,4294967295,308949049,404529686,55978821,4294967295,11014613,822530241,15210809,747421900
+	.word	187476021,147064594,316825618,4294967295,541722413,891496524,13330706,619326210,459589722,606229836,4294967295,147081857,756168024,481089028,861025602,562432678
+	.word	584881826,4294967295,843635146,4294967295,4294967295,404541586,4294967295,697860520,4294967295,4294967295,4294967295,713902469,4294967295,721576360,4294967295,17469774
+	.word	4294967295,411566868,4294967295,489463844,4294967295,721871908,193606930,4294967295,329716400,190357976,454107865,423758376,887357621,147524138,4294967295,4294967295
+	.word	160743810,4294967295,819603525,295213474,609880909,419636032,862455976,4294967295,194467858,9115474,4294967295,145376300,176707609,4294967295,308851330,458515633
+	.word	4294967295,406864520,184943241,4605781,581330996,578886454,757893546,46752937,303909012,4294967295,186459540,357645074,4294967295,4294967295,4294967295,4294967295
+	.word	186727253,176996374,891950381,26563728,421811236,293753937,4294967295,550707289,4294967295,580019650,496241237,17126853,4294967295,625226840,591729753,463755457
+	.word	881230502,211301057,4294967295,583690246,4893114,578819860,4646198,738476804,224870456,39527897,4294967295,826410536,18506957,191138605,441985113,4294967295
+	.word	4294967295,445179557,883427542,575310266,4294967295,719676965,176218677,559157657,578859684,218194568,4294967295,4294967295,891509192,4294967295,750938666,490741970
+	.word	25449030,419472089,828809762,4294967295,442270248,321278170,464169008,4294967295,731003457,82142866,436380305,893921348,730928552,4294967295,187360673,4294967295
+	.word	742859296,4294967295,60316068,324224057,22299014,147334913,354489998,458790233,151008008,461951106,153146681,740697265,4294967295,4294967295,4294967295,85369049
+	.word	4294967295,4294967295,496294082,4294967295,442288405,407127860,4294967295,550310592,4294967295,4294967295,4294967295,715295566,4294967295,675685953,4294967295,168602034
+	.word	8565434,461459666,4294967295,409798932,756228537,4294967295,321076020,4294967295,4294967295,858428674,807969206,673781176,4294967295,194066964,185000584,550146881
+	.word	302203597,847809198,765609249,608874586,180882090,315626129,169554232,4294967295,583305370,4294967295,593519786,891607078,819204753,430449876,303481620,4796728
+	.word	889338176,304240025,222572561,462112065,180643504,177913881,46278196,689746950,881334678,40265014,876949590,438126853,281690136,551194914,489463970,176841136
+	.word	684811784,493110330,438454617,14822073,86644488,747143321,46352692,194564137,4294967295,442810394,730937554,176249264,718029984,59449932,722864329,705063496
+	.word	4294967295,314754850,309146196,889345448,319908228,210854608,4294967295,816220676,675557433,8607257,447441473,348198489,27530796,4294967295,630370953,357961809
+	.word	186463938,563413205,4294967295,4294967295,885663813,454725640,303252916,892014638,4294967295,134890841,4294967295,4294967295,874979926,294146252,4294967295,4294967295
+	.word	4294967295,878985653,4294967295,4294967295,617349398,4294967295,228274249,4294967295,51781816,4294967295,306796332,4294967295,4294967295,161154441,625149241,4294967295
+	.word	715558930,4294967295,4294967295,717447248,682179362,817906889,4294967295,4897585,4294967295,4294967295,424815378,874912401,327368717,25866760,411620482,574698324
+	.word	143426101,547001100,823611585,4294967295,178981682,4294967295,861484104,739526404,4294967295,597309734,4294967295,4294967295,182134834,547361434,4294967295,4294967295
+	.word	430248513,885276678,715527218,25837770,478167737,822360070,19149572,4294967295,23905670,323032498,614552964,454891796,564398500,51665370,459098248,463643346
+	.word	4294967295,537666188,4294967295,79979092,318806745,44456484,356561700,881252529,881984020,4294967295,874858902,690237569,4294967295,4294967295,176741198,882333777
+	.word	4809356,4294967295,348314386,4294967295,4294967295,186660616,4294967295,852117577,18667662,54827410,706528396,26915334,617796665,13780245,472532777,549606721
+	.word	316889177,537272505,462472868,848375984,4294967295,21504152,541898018,307048532,4294967295,721880281,11295278,755249312,679620696,585851912,578840270,4294967295
+	.word	327856705,327602246,195481650,608601736,4294967295,4294967295,893823522,81021573,715319884,710722881,4294967295,684853553,26825898,9226710,328222902,4294967295
+	.word	21508356,578892952,177691138,319489828,613036869,874691146,86811340,4294967295,155726937,321073204,4294967295,4294967295,11211341,361977937,445731590,72177160
+	.word	190624330,4294967295,10244561,816330756,872829480,539175641,443065090,890317188,81303240,559087961,170336946,302551476,688690560,156009874,709100305,4294967295
+	.word	489293113,78134036,715658049,4294967295,361775253,537049398,4294967295,7155984,4294967295,598091936,4294967295,4294967295,563807500,26548758,88359334,4294967295
+	.word	358179852,21280530,438834952,756101402,17098382,4294967295,684463377,4294967295,315311297,732334384,4294967295,189097549,445434016,743195905,203703052,151257492
+	.word	707302842,861014322,4294967295,843133236,597964836,474751574,4294967295,214197780,195708322,441255464,292327982,464127154,93534740,362939857,675558489,757119161
+	.word	596989998,46818854,405554436,328274352,731005965,23536420,615321613,593889497,14296581,4294967295,22440517,889915784,493421913,4294967295,885084304,4294967295
+	.word	545928281,21521865,497636554,21423621,21316358,74199721,753165362,618812488,4294967295,4294967295,4294967295,178809268,4294967295,285250317,879363657,4294967295
+	.word	881013268,4294967295,27547141,629612674,4294967295,194070798,4294967295,696328626,732349570,4294967295,874074380,4294967295,625780866,740582610,169222929,752093701
+	.word	169431820,4294967295,714172593,630206805,683827456,429446150,4294967295,719657760,713430554,184978216,4294967295,323144526,321665184,21501773,303876549,457376586
+	.word	707578312,43181644,539419862,155468184,419714054,26915336,719102468,539405060,12771849,94806193,4294967295,4294967295,463143184,318919726,575453898,4294967295
+	.word	407127810,742861378,4294967295,176948756,4294967295,274425216,4294967295,713443104,895751601,145115778,193349973,591706136,4294967295,4294967295,4294967295,348936706
+	.word	4294967295,454321825,476342326,424806713,184596245,721492440,882545682,740634808,4294967295,4294967295,17572484,4294967295,147347737,731055404,627350306,689211533
+	.word	6874389,17197382,13256485,441221652,853838372,721683278,211551764,4294967295,4294967295,189270857,690358472,17179861,722243904,552407296,609236649,4294967295
+	.word	684462354,697513480,730121284,4294967295,827540872,26494388,876892736,51159757,16929048,22295344,425027072,89960784,4294967295,462045321,4294967295,4294967295
+	.word	4294967295,476664584,4294967295,883640773,4294967295,5793101,283988480,411899476,169436616,445160090,187361612,275203746,4294967295,4294967295,4294967295,274097173
+	.word	889264776,407983386,210131457,4294967295,455124697,286045364,287134882,323152450,187060280,27923724,883294864,19567886,4294967295,4294967295,442541842,730151104
+	.word	152766281,545330874,93469330,478766085,572666166,709636385,459047216,48916648,440687161,190066736,4294967295,419583784,4294967295,304245141,4294967295,877299080
+	.word	463160393,4294967295,287100940,671236537,747409952,441536856,4294967295,26363317,270029273,571908868,188756490,4294967295,4294967295,4294967295,4294967295,362416710
+	.word	872825032,136661846,441733688,470508745,362893452,4294967295,878397857,4294967295,610043561,17225482,4294967295,718837050,680047768,295864844,479990273,476889097
+	.word	4294967295,608219956,854137154,723945625,752044090,675296793,617895748,4294967295,596720264,4294967295,826705064,170144434,877207628,273757972,5723472,756876456
+	.word	19143374,4294967295,358156678,677677840,824185544,4294967295,15361298,4294967295,559354656,877921805,618817185,679896209,765665292,182002434,721510820,705476752
+	.word	4294967295,48908070,89418316,145285172,4294967295,4294967295,616715585,4294967295,148198914,618342585,21145008,7005454,4294967295,4294967295,314655366,169237329
+	.word	881997520,4294967295,4294967295,470111045,4294967295,592261188,438887717,309117612,890509697,187064962,713896016,308962860,4294967295,877306240,76330197,76321424
+	.word	617633049,543576834,850004516,887247136,186280322,4294967295,4294967295,486860868,4294967295,469919286,819204642,4294967295,571794901,539158796,227069992,454893637
+	.word	90465486,606221653,4294967295,176241336,547382924,4294967295,549529220,304894157,211224281,443213384,413192408,461635728,340277273,487360136,887619844,807678130
+	.word	818481414,180936980,755115458,295064069,721500360,721774016,608461452,709895634,4294967295,856950989,4294967295,4294967295,94718342,4294967295,21370441,4294967295
+	.word	4294967295,419571353,4294967295,4294967295,891947434,4294967295,4294967295,570845396,860309764,810832914,862333104,807580170,891499210,861161541,329730241,4294967295
+	.word	424173768,4294967295,4294967295,203891220,877078548,4294967295,857348386,19288870,4294967295,4294967295,814106806,4294967295,11186354,203991769,10228428,4294967295
+	.word	362460178,194513165,4294967295,4294967295,860959012,4294967295,548059193,4294967295,4294967295,747016761,610021397,854119496,564834466,4294967295,713648512,88348248
+	.word	4294967295,314642997,181045530,4294967295,539322021,4294967295,445252400,718594592,893818113,316802614,362338446,876872148,16933268,13911860,194722066,4294967295
+	.word	4294967295,18616621,550708866,315246785,710422568,671508041,709281818,492069072,77816276,609904072,329304749,4294967295,765659662,4810376,358167737,707566124
+	.word	350884946,715731160,4294967295,895688721,4294967295,704865617,713857426,4294967295,81021780,342251577,730105420,94787729,4294967295,718627877,891557281,218923476
+	.word	321063354,4294967295,719415474,186934318,27796172,134619701,756484296,295245184,9974489,152511264,303459025,4294967295,4294967295,443081986,4294967295,822753450
+	.word	558670884,302388049,748491217,493655361,4294967295,308954914,214737618,203710996,4294967295,203699025,429184546,4294967295,274090069,826316298,187344922,559689865
+	.word	27709714,271402157,438114953,891685512,4294967295,4294967295,457714434,134504980,822510932,4294967295,309151790,579483737,609047821,819597329,740438290,541419926
+	.word	4294967295,704984836,362951190,541853385,593635116,25346734,4294967295,362432590,4294967295,318988364,308765248,4294967295,616748105,895683082,4294967295,4294967295
+	.word	4294967295,22844717,606740653,328944066,581634490,4294967295,195463720,18174341,285357145,412915734,675561856,404899636,4294967295,4294967295,4294967295,459872568
+	.word	723524393,405463334,891375909,559722689,316824385,608457176,575414689,819531848,887408692,4294967295,357635513,15214742,688022601,4294967295,847448629,4294967295
+	.word	564154572,889266566,4294967295,308700706,805582037,27931204,457369610,436397588,4294967295,696551812,4294967295,4294967295,4294967295,4294967295,4294967295,893730892
+	.word	440421034,4294967295,4294967295,4294967295,271233210,493654064,294016577,444635956,4294967295,40256266,81568294,879047170,14378121,574906804,4294967295,4294967295
+	.word	39199288,878007840,826554918,271267364,4294967295,543852968,356659282,176831264,675758106,4294967295,4294967295,457353754,14369944,705840584,4294967295,841369908
+	.word	4294967295,4294967295,631575988,882416289,709964112,457793605,4294967295,605368965,181454677,4294967295,176992310,740602404,356530322,223134793,339829168,4294967295
+	.word	4294967295,438655813,4294967295,268964568,461919556,304633274,25310772,717504728,229124108,162154542,4294967295,185686796,4294967295,328348181,538252696,4294967295
+	.word	730139013,681611866,562303692,4294967295,856765096,4294967295,881398860,4294967295,43173716,751075897,4294967295,877085985,558031885,4294967295,677799490,615127086
+	.word	184592025,606950792,595900064,7094582,676103562,713588888,4294967295,4294967295,419436857,4294967295,4294967295,453804680,282656921,4294967295,4766504,4294967295
+	.word	442239313,596981910,4294967295,873804485,270977812,857036942,185993898,19588520,893560397,753093440,204255542,4294967295,805581008,493413504,4294967295,731003432
+	.word	696328748,4294967295,4294967295,4294967295,4294967295,578958144,720177322,615123149,4294967295,4294967295,714545168,4294967295,216556586,4294967295,320295128,4294967295
+	.word	186929922,71647672,17046220,322967314,476889346,220900130,191129681,407130128,4294967295,4294967295,4294967295,880818326,495494784,671625496,604812613,26395308
+	.word	4933065,625369376,270283473,605857157,281876496,4294967295,46672569,4294967295,10638770,731268354,227591469,4294967295,882985614,353852196,4294967295,4294967295
+	.word	210850224,46406448,4294967295,630673734,317281024,853756212,4874544,4294967295,357655108,437921573,4294967295,136764168,214706818,189572498,4294967295,541854378
+	.word	559711532,319435584,688652548,92541524,152701261,291635673,306635284,718607961,323359800,544029384,4294967295,219435777,4294967295,4294967295,144729644,281101062
+	.word	26400333,731261058,627835140,718018865,5777877,4294967295,4294967295,563140870,4294967295,881213570,4294967295,15279284,290481292,813775413,4294967295,187337512
+	.word	4294967295,4294967295,847907281,4294967295,4294967295,4294967295,4294967295,4294967295,136669774,25743629,4294967295,4294967295,4294967295,4294967295,4294967295,718357797
+	.word	743516730,404296026,4294967295,4294967295,307018242,218149174,88347473,316445186,893818441,4294967295,4294967295,302410436,4294967295,610935865,324569497,4294967295
+	.word	883328722,186687930,304769168,545673984,594360488,4294967295,4294967295,4294967295,339816985,39078584,564400802,855912628,721459594,893830404,697603505,191701069
+	.word	438969093,21314322,5067089,741157041,4772249,631441740,619323481,543564505,190646704,4294967295,323797184,496129360,424153096,715278425,362426497,459052338
+	.word	159948820,27707048,169501997,94651597,190392704,4294967295,4294967295,4294967295,403326793,488278278,559166617,596818178,462571605,559714314,875046093,18310404
+	.word	211443725,679490320,537694485,576114696,4793036,4294967295,579996377,572864341,23872932,4294967295,4294967295,194652738,4294967295,560080686,744955960,5720341
+	.word	10949424,315278118,714697154,182510866,873907350,193212468,4294967295,17224452,688986505,4294967295,4294967295,194382421,9056400,4294967295,739657989,437602008
+	.word	9069061,357698124,441188629,186079240,4294967295,4294967295,268980665,429991476,823862284,462641425,328860845,847942209,463014058,4294967295,4294967295,4294967295
+	.word	844384276,890700052,413688868,413795876,4294967295,861406412,461521960,841623984,718541600,877974576,442245141,709116974,679643917,593650734,596812852,4294967295
+	.word	195735562,877680041,328743588,4294967295,4294967295,4294967295,537172441,4294967295,581064748,4294967295,494981672,350378553,193611853,862071200,23348646,5032404
+	.word	584213128,4294967295,86380884,455875273,496632976,42555566,547361589,680006400,480792768,4294967295,756811012,4294967295,609047624,362152081,169658838,204096825
+	.word	336158894,4294967295,4294967295,4294967295,348807237,583324709,596839114,413196852,714917036,625041668,308859330,4294967295,4294967295,25478550,157845838,303490598
+	.word	711330608,881018560,493654353,193213524,591489284,747410482,4294967295,890906701,4294967295,711354408,747038882,4294967295,215794946,81306437,4294967295,355238356
+	.word	146891400,811223112,17045913,610753314,17065644,463022722,183019266,810079522,224997400,696551856,673990924,4294967295,4294967295,4294967295,303248180,4294967295
+	.word	4294967295,19674420,4294967295,228119853,537669958,15518377,579474478,411722801,21186313,4294967295,558269193,718808258,488900389,4294967295,609539458,43403993
+	.word	885138113,4294967295,718014801,461656133,11192506,889331797,275285398,4294967295,883085356,5064116,4294967295,572314056,169423701,142657940,4294967295,4294967295
+	.word	4294967295,463655458,562299028,4294967295,4294967295,81404441,828803208,4294967295,609564345,88286028,581731972,4294967295,453305525,328600117,877220224,826352037
+	.word	315376676,55732778,4294967295,753142310,455889154,46291281,4294967295,22495577,406872584,4294967295,4294967295,308955586,810033792,872825478,595757462,492906706
+	.word	721551694,453116569,4294967295,18490788,269103256,895616337,17086681,496575169,4294967295,274158368,4294967295,4294967295,721709446,438999560,743524697,157299034
+	.word	879375440,156649785,4294967295,4294967295,619340838,4294967295,584147284,308073906,4294967295,155600936,856761556,606746376,274223513,4294967295,135620236,564531510
+	.word	271405574,403333380,89407940,408994646,156807193,877056082,4294967295,4294967295,4294967295,756233529,4294967295,4294967295,4294967295,816321588,4294967295,189281336
+	.word	4294967295,756098852,4294967295,447497270,563810313,320301762,813782158,706035929,593791756,4294967295,4294967295,4294967295,194068757,80036517,4294967295,354571022
+	.word	26816661,74064720,15538888,26781093,193247318,4294967295,608862633,4294967295,357045698,613026264,227821653,412247089,612761750,625022221,46406233,709441562
+	.word	324159565,4294967295,317344514,147621174,81582632,46962992,429999396,304563417,13178201,707016248,4294967295,479204049,730935812,606907052,4294967295,295126020
+	.word	458810437,4294967295,4294967295,316443344,4294967295,10184132,454122312,320869172,4294967295,724310465,874699184,893567360,4294967295,4294967295,679873112,281109684
+	.word	4294967295,4294967295,891336998,4294967295,462604361,304691013,4294967295,42134158,81402704,18003797,879429934,19535148,813734353,338368332,17983149,480019633
+	.word	4294967295,4294967295,489464517,671245736,4294967295,552403652,4294967295,178739025,4294967295,4294967295,4294967295,156591120,273285656,673755450,4294967295,594319432
+	.word	4294967295,4294967295,891507138,274510529,12756790,176249304,4294967295,303634902,707275532,56799769,9003654,876874317,490906400,329908676,306989525,883627058
+	.word	4294967295,420176132,4294967295,549524122,4294967295,894844937,709304400,419588418,631906476,597830101,710193690,442190658,824610826,496665777,4294967295,4294967295
+	.word	462768258,4294967295,152489993,675563598,4294967295,710239789,472138534,881218117,710717960,706228361,549495494,159404300,407136962,895763629,283788344,738767160
+	.word	4294967295,697477538,861317298,558293248,470597958,822352322,4294967295,177605329,4294967295,596779726,184904064,4294967295,94773925,713229068,4294967295,826746065
+	.word	470586058,228209736,496540354,889925638,822171050,4294967295,424830498,4294967295,308828249,308951641,188789288,350315696,281569954,4294967295,17097348,4294967295
+	.word	4294967295,478304273,15427922,358756866,4294967295,538141964,476717872,12917464,314726970,202920393,4294967295,4294967295,203712014,813740565,4294967295,756113608
+	.word	545688230,879120642,681361414,563545796,4294967295,294848012,810025352,4294967295,819222018,303256337,324405829,722953386,765741506,181424432,4294967295,160051240
+	.word	411588417,4294967295,282593461,160834193,17085220,753436421,4294967295,38287032,874910249,4294967295,4867373,4294967295,875176336,4294967295,193517954,321088194
+	.word	420259876,706886440,8606482,324068784,572668212,4294967295,877942801,593894217,890705993,572205196,764880452,4294967295,428907208,14979794,51000632,11276978
+	.word	183140688,612816672,78059348,407676436,753460360,273770192,337795922,572871821,4294967295,717408266,4294967295,4294967295,4294967295,573249817,826882336,591664568
+	.word	671487792,4294967295,4294967295,23635162,545940685,9912966,4294967295,327569984,447385626,4294967295,337850936,4294967295,848970182,4294967295,170416936,715524697
+	.word	872986280,4294967295,23865860,340287510,329298470,438512465,4294967295,890329288,309117996,4294967295,4294967295,721816389,805619078,718554330,5026449,304571012
+	.word	4294967295,673408305,811681046,625776716,4294967295,562114836,891506976,180640321,551606554,560162210,78459397,226788752,739683154,73950926,4294967295,885327525
+	.word	436786501,170403638,4294967295,806966408,4294967295,455104713,811615668,895877636,14303493,22457158,4294967295,847970852,22888774,189282057,57193288,170617384
+	.word	338213670,187478068,614929090,746625804,168084277,407669417,826741249,552412244,4294967295,594322854,705468750,227815937,472011034,4294967295,81404690,4294967295
+	.word	457779008,39536908,4294967295,753730897,592521996,316721972,813838992,4294967295,676743457,286316730,488903476,329275824,191645736,195470018,362463652,134882126
+	.word	593299597,291902210,753139865,329822230,710717450,438129193,424207498,441976118,719857753,270965305,12769833,822159509,453247622,4294967295,4294967295,858202149
+	.word	285882177,178016302,46420121,17603017,443154704,4294967295,4294967295,739534028,732349481,56891824,60313892,756245576,479217412,740581926,4294967295,4294967295
+	.word	303706884,436773017,4294967295,461526530,885690385,4294967295,152332300,843784750,713241088,881003094,290198028,584345669,562241940,458810505,809915977,285607749
+	.word	573190298,626464552,885164630,56445317,4294967295,428363784,877068820,4294967295,630379778,4294967295,764590130,4294967295,4294967295,684199960,43181620,581636142
+	.word	470590038,715574048,224703266,4294967295,676946952,718280265,4294967295,4294967295,271365301,4294967295,715546754,4294967295,848382604,550699797,4294967295,877277706
+	.word	195310082,4294967295,880850629,4294967295,308300249,4294967295,608448568,854069890,169419481,627370028,4294967295,872747698,843632972,4294967295,169255444,706094629
+	.word	191260720,88261017,134635860,178686617,438623012,718857345,176243372,721838217,4294967295,89571466,412672006,4294967295,85365014,4294967295,886774281,4294967295
+	.word	4294967295,13195480,94966444,4294967295,756879752,489458344,8925881,323045594,211584565,476318385,4294967295,4294967295,424452613,857148040,454318297,4294967295
+	.word	877265200,877938070,878127189,537704649,227857452,819110484,766020008,4294967295,4294967295,4294967295,413272722,598137032,614656386,885297717,578902438,4294967295
+	.word	889919938,273073238,596791713,86716618,550111434,4294967295,273081878,4294967295,187042104,306262552,4294967295,4294967295,730140752,539666604,422390468,885694641
+	.word	204261834,80888089,472662276,894998920,281680385,730996782,287087266,680597081,894511684,143262220,4294967295,306243986,559178788,715295500,496051748,705470898
+	.word	59908786,315408406,4294967295,349247032,606216664,18032396,274477713,439130418,4797256,291653708,545720532,445728953,328634390,307803834,319181912,537045401
+	.word	4294967295,412178225,4294967295,4294967295,328288900,883077652,4294967295,4294967295,348678822,74064473,493093009,629310868,4294967295,26358037,684254338,458495553
+	.word	731124128,4294967295,4294967295,321086914,714936736,323531589,826558626,613157037,4294967295,807016904,290194641,4598417,631710914,25711949,426255137,74070329
+	.word	23345337,881013844,4294967295,4294967295,4294967295,713634886,4294967295,4294967295,93771026,552379542,609310137,304919734,597309509,710486424,4294967295,23486673
+	.word	4294967295,4294967295,707543240,304572996,854237190,471536153,169693516,323403993,328356880,713868709,444749850,187061290,157313548,176241360,4294967295,147630770
+	.word	4294967295,438649528,328682113,4294967295,4294967295,721822776,470602312,308677337,4294967295,170347304,625782820,19289898,187474336,169533713,4294967295,19162260
+	.word	4294967295,4294967295,4294967295,4294967295,4294967295,152777752,6956848,4294967295,323437316,161009985,4294967295,220883361,496244784,4294967295,412616889,706889146
+	.word	574882510,4294967295,25736372,457532485,292031300,4294967295,713243424,454697120,336237008,696386056,60307658,4294967295,18506889,813779589,575451178,604170956
+	.word	574707114,4294967295,895881768,810845588,755012058,203704086,320672128,706890074,4294967295,353801986,876872337,879116962,271129045,748163841,539660570,895894569
+	.word	4294967295,211486161,549611862,731137036,13263120,4294967295,18014644,4294967295,446237461,4294967295,470360710,883626434,696852642,274205389,145099472,170574632
+	.word	4294967295,27931174,4294967295,407164978,323392032,814387217,4294967295,812265986,18495237,883626528,824465614,322974234,227969558,13771285,455772472,4294967295
+	.word	757872902,576993976,4294967295,619520020,818595078,72104210,445277728,558663885,304540336,683934897,823416900,608841802,4294967295,4294967295,4294967295,94025896
+	.word	472453397,885526849,753738244,606352212,840257712,497242664,549717721,4294967295,195479201,323390009,4294967295,883100081,19098004,704987545,711363145,672285978
+	.word	152363650,743007273,181158165,4294967295,718293337,459023554,470047569,493130561,40250032,137012014,680001924,4294967295,631510689,268912312,463161513,169436841
+	.word	134630042,18307880,861417761,756814273,4294967295,189575216,74016424,4294967295,54991657,189008410,457188869,490924112,75643480,4294967295,180935464,60437830
+	.word	21304761,593794105,538366232,889651848,216090329,826721286,457351256,282805378,4294967295,4294967295,323799086,542443928,419582008,302831024,743223818,843612872
+	.word	4294967295,606221141,411863685,4294967295,159920384,715666521,807544460,419698497,447482532,593302920,4294967295,4294967295,539108756,21193996,320299028,429135380
+	.word	480266905,454165846,271135494,731202700,4294967295,880859526,886252596,539449604,186659594,4294967295,223126993,4294967295,488395009,53098282,592709772,478708420
+	.word	10949394,14358344,593889464,4294967295,550134794,495620352,539682086,225199362,854133414,545339064,4294967295,581658818,489460776,4294967295,718563409,307693273
+	.word	18010392,26629637,563814790,719873194,606773422,93767302,885692930,460081477,747423820,303878284,4294967295,718561297,718481497,4294967295,81420592,478712608
+	.word	713112357,740561453,715295536,4294967295,11036876,281175061,690054286,579909812,881460613,329924812,4294967295,17524012,4294967295,445827801,848891950,18289369
+	.word	811878060,885260868,4810412,324572205,889266350,765532682,609575948,4294967295,187486508,546080150,43170578,4294967295,189548554,355099008,496543892,25444756
+	.word	683887426,459597314,4294967295,4294967295,732438597,541786958,143394389,744764240,545393485,12883602,4294967295,362189909,46672085,4294967295,181690389,176982706
+	.word	883311234,877144737,839427276,144796246,4778700,183124224,186255642,86679737,764875297,60297526,4294967295,358363141,730940616,4294967295,181060649,584880468
+	.word	4294967295,824314572,4294967295,285610752,316719893,614242721,181069089,757346341,4294967295,4294967295,4294967295,357961745,893470980,4294967295,155716362,181044793
+	.word	755405056,4294967295,323105313,4294967295,189269401,4294967295,890970273,473973450,545482400,316369412,826483104,719071809,444647610,597832322,4294967295,4294967295
+	.word	323106360,4294967295,618849961,538139432,876889524,4294967295,189294850,270715564,627380302,4294967295,893911310,316754596,874664488,711287853,626864258,4294967295
+	.word	474830402,324080016,4294967295,4294967295,584853508,877057098,17619148,26882570,55886265,496109192,4294967295,4294967295,614632078,874913973,4294967295,291013772
+	.word	4294967295,436390553,445156118,52847786,454762520,593928198,4294967295,176621273,4294967295,323512524,42422842,883067345,705881545,546705433,4294967295,593803458
+	.word	4294967295,4294967295,4294967295,407684406,541469492,889926724,4294967295,135611796,843100725,227621204,190055833,746677457,886253058,4294967295,4294967295,722276429
+	.word	321651342,308368144,177820430,459576081,488919076,575289657,405313162,308697937,189572546,843624532,740647500,193628749,883296469,4294967295,560734284,152903764
+	.word	430442756,39216680,4294967295,160990644,155263825,4294967295,886642306,4294967295,562042325,52253869,4294967295,685315330,4294967295,606495925,4294967295,891332788
+	.word	423889734,559113600,211157657,4294967295,86825166,584063705,176968097,227550676,538588421,709125633,323510692,17604790,4294967295,80552624,711538728,805970097
+	.word	822358102,454223522,896088070,447252698,4294967295,419516552,13161610,458756408,350358194,4294967295,4294967295,488924372,5789081,840309008,308294422,887760049
+	.word	176578608,4294967295,852757012,306236058,4294967295,675357454,583805013,4294967295,4294967295,672437772,4294967295,4294967295,860367300,886775877,748192953,84710733
+	.word	748710289,146884948,407579474,302175673,458506265,609315148,625745934,26555013,697350438,4294967295,806629585,843756040,742852361,4294967295,42125718,22299789
+	.word	338448526,325456689,78139534,304487253,136766802,4294967295,4294967295,194250448,882557988,419582728,4294967295,4294967295,478709973,22585496,4294967295,854233640
+	.word	674022541,186954529,559747144,474220340,357721552,680682514,819499018,706898322,4294967295,182244866,549593761,474679882,419455620,4294967295,159786689,4294967295
+	.word	411882640,847943089,155464721,77804242,12896036,4294967295,60432560,135057740,323359288,291529900,4294967295,756178957,4294967295,4294967295,189277570,329472556
+	.word	271013668,679482841,291319877,4294967295,436528272,732438978,438916422,738779556,476777048,14369992,708917770,858425764,683763272,852135944,822358069,4294967295
+	.word	887145609,328403601,743720973,4294967295,424151876,10162713,4294967295,295113425,722250178,4294967295,809910528,4294967295,715221540,4294967295,895665577,4294967295
+	.word	323127897,444601009,302168850,4294967295,545404950,79971094,4294967295,44452057,546334412,4294967295,490825865,715310466,17065606,462031429,576391948,853823618
+	.word	11276942,4294967295,444652358,438868788,6972688,563815876,314660644,747016273,843620800,152327969,4294967295,4294967295,721495462,706037541,472181380,474653274
+	.word	187360713,144344588,705476808,143444621,684254378,4294967295,478204710,160892488,612552781,887769162,5067336,4294967295,877078549,627221294,4294967295,709290056
+	.word	463636820,303247897,23390788,542434325,446515906,60046034,749213786,675820553,25315661,4294967295,204253649,4294967295,696652320,4294967295,160444981,27931146
+	.word	4294967295,43674065,93917621,4294967295,470377096,4294967295,186266665,170337936,4294967295,4294967295,744502841,4294967295,4294967295,4294967295,337787482,717758625
+	.word	4294967295,441537113,4294967295,94519976,4294967295,55752281,170669704,340155200,471483141,445417682,8598042,187066018,4294967295,841371794,571876056,285659225
+	.word	744006477,814287501,457345810,194553268,558244901,4294967295,4294967295,59120328,545350286,854198448,91013542,73966381,559155980,571761837,539801253,43391825
+	.word	4294967295,194265505,152124200,457361666,213993177,550295873,814109777,478735045,286033286,4294967295,454173368,4294967295,185245786,281853973,805585284,546080982
+	.word	17196201,627345862,877311057,722930470,8821526,25310545,17077013,287331109,4294967295,860146050,4294967295,4294967295,4294967295,880853396,21795370,4294967295
+	.word	411877429,4294967295,323412518,814354448,176720568,12789465,4294967295,548165670,4294967295,4294967295,625227801,4294967295,187312217,4294967295,880935314,4294967295
+	.word	420290566,189884816,827892780,9914052,475031112,457998596,46416661,169693773,186059433,361771589,708916760,4294967295,440493360,4294967295,744763993,4294967295
+	.word	46418629,23376688,19666197,861145541,4294967295,4294967295,411699354,4294967295,4294967295,445187254,361923156,4294967295,180643412,315132116,4294967295,558274649
+	.word	4294967295,704815513,268835668,843449898,324612224,4294967295,740570884,441115953,742803746,575760653,182508328,317326098,810207650,457973921,5024213,4294967295
+	.word	458426713,340187906,23859537,4294967295,472443050,610624142,441100065,15386792,407528785,4294967295,349768484,713425041,4294967295,721748121,169223700,441107513
+	.word	738759464,454856714,4294967295,17609014,25830605,325269585,470487314,88917197,885140033,8608270,705902866,896020801,304638165,475825426,856774982,592914436
+	.word	349331473,441141568,496305840,302823956,4294967295,577152788,4294967295,558666121,9257350,178278834,178992729,891498536,605709644,4294967295,319903533,56764972
+	.word	822749230,4294967295,4294967295,4294967295,8852246,8571566,470049284,308953858,159404552,4294967295,144788302,89344441,497689649,575034424,461652672,4294967295
+	.word	17052486,562254080,181164113,42120889,349964977,539244340,718283269,478238501,4294967295,324581125,4294967295,455086362,4294967295,14165829,720181552,764585378
+	.word	4294967295,697611425,4294967295,857811364,58897684,874128910,719855801,562319438,496141993,4294967295,80957744,6107472,806888652,328226309,4294967295,176251316
+	.word	454693945,317351462,194598338,4294967295,19159182,222914953,52222404,320688258,224929838,613865218,4294967295,839422422,195627477,889913801,149758592,218833977
+	.word	13165845,4294967295,22177170,42160945,189838681,4294967295,470427192,585834649,419717280,539632845,890407629,188769712,723806628,4294967295,874791117,826443278
+	.word	558696710,308699650,4294967295,559095833,543515670,883624141,5064072,223438125,23533850,4294967295,4294967295,4597273,684206209,42776240,672736005,269275589
+	.word	756310406,187473974,739731016,476401680,609702920,321063641,578885304,4294967295,337205721,4294967295,341205505,419694277,4294967295,878380306,187509120,19567370
+	.word	357583692,4294967295,558041368,4294967295,4294967295,550168898,170539824,625403200,210850578,4294967295,4294967295,4294967295,4294967295,546387590,551593606,894973089
+	.word	729940369,4294967295,4646228,496637512,4294967295,4294967295,4294967295,187347202,461457748,4294967295,170541326,224703313,625021273,680954404,329685712,315364993
+	.word	4294967295,4294967295,595645864,328614101,4294967295,4294967295,826325161,4294967295,609890625,575352905,478283290,4294967295,149477657,4294967295,283207332,4294967295
+	.word	9213612,4294967295,268998316,4294967295,403203413,4294967295,4294967295,216879120,564824332,715141906,222782985,571781764,854106292,604169556,447399940,15405864
+	.word	4294967295,48896337,730380358,840313476,203958681,13310224,316823074,549720084,4294967295,874826148,25859656,222766105,349308436,4294967295,710353729,4294967295
+	.word	886396034,675547922,147118626,4294967295,542189973,88676686,294722062,218925396,4294967295,324864177,496161072,440689718,424173696,843319765,629219974,4294967295
+	.word	690127150,470028984,55351752,4294967295,818627841,4294967295,756843813,195734048,4294967295,216730184,629805389,143414721,4294967295,323764641,496506530,4294967295
+	.word	826836110,4294967295,4294967295,877212744,14959366,752115717,4294967295,147490609,4294967295,4897113,182127442,191411290,713865346,4294967295,439030328,285606532
+	.word	423892481,306774670,338483750,4294967295,329665184,873675337,575459618,4294967295,21116681,878795022,455278874,583674657,4294967295,4294967295,476338714,404284104
+	.word	738474585,893924546,853807793,709374784,21111256,4294967295,814110213,4294967295,4294967295,4294967295,4294967295,606757285,214565674,743715666,4294967295,169272657
+	.word	4294967295,4294967295,585257273,147532610,338387409,891991176,740116648,543251278,889247053,51655462,471155353,4294967295,4294967295,60440968,548104332,4294967295
+	.word	631974305,441100802,291980474,304887316,25760085,424151177,4760270,878727753,698368452,4294967295,404543688,730118290,4294967295,826353028,48424658,442001065
+	.word	46753062,4294967295,177263161,176730164,288023621,549545636,857412620,291898918,438063241,325675021,442049589,4294967295,4294967295,21127436,881939021,462684692
+	.word	4294967295,609038644,294670769,8958772,459842338,14820057,323040804,562436180,4294967295,461525569,4294967295,192991634,740889418,4294967295,60049582,823592212
+	.word	4294967295,718053380,753492128,876927425,707276970,840609937,4294967295,818020624,4294967295,4294967295,455772505,4294967295,210842329,4294967295,289539885,4294967295
+	.word	4642096,4294967295,848441365,491981352,355251877,362415692,437930266,4294967295,215273986,883067312,606557508,327194032,597362825,302813868,882390021,447497346
+	.word	606804440,8966917,742995778,186720696,597995526,887442112,4474585,597295240,584803369,707020185,4294967295,81471268,454173716,764844578,4294967295,688654630
+	.word	4294967295,4895569,224928161,537703624,357064772,4294967295,4294967295,189146961,309123522,4294967295,203769676,713123984,4294967295,809584054,546101441,60110501
+	.word	480994881,480985092,4294967295,608217754,426254404,879371681,320636621,323388164,441131096,181488280,227624360,14247205,874978000,4294967295,145384880,194721026
+	.word	808102404,597038120,4294967295,851484880,342428313,21154234,304682637,548165636,557998464,455870644,4294967295,4294967295,4294967295,134885896,291587492,4294967295
+	.word	893733314,4294967295,4294967295,338479276,814350476,17226502,874975568,214510264,4294967295,81350872,323031886,4294967295,476893224,885280928,4294967295,181996216
+	.word	286394010,4294967295,144238274,624996522,4294967295,10970677,420832900,4294967295,4294967295,9586073,4294967295,303589037,329815458,631906756,4294967295,4294967295
+	.word	4294967295,496064721,4294967295,4294967295,4294967295,324209420,722527652,19675476,439178416,151675148,746998596,352801817,25441461,4294967295,4294967295,294689332
+	.word	4294967295,320672813,25629012,4294967295,4294967295,4294967295,307016192,149251638,4294967295,625107361,44459698,318925442,328942797,626484482,73877321,675693913
+	.word	60303748,285299525,4294967295,4294967295,496572756,319829174,690758860,420092674,722634029,4294967295,609046572,4294967295,609303257,218835788,675678025,204091914
+	.word	715528240,815174164,713079366,4294967295,723659585,805851462,168606344,4294967295,874788017,4294967295,4294967295,696399400,4294967295,4294967295,574694104,55089464
+	.word	812261841,4294967295,203974346,17213593,4294967295,73970516,686563396,291965444,4294967295,574661044,631903277,890504838,4294967295,4294967295,580342593,609886978
+	.word	4294967295,4294967295,4294967295,295884849,170191413,493012258,894440010,461513361,5054990,287494562,182239272,4294967295,4294967295,551224456,537694677,4294967295
+	.word	4294967295,572975272,851728432,682190242,539697560,4294967295,60172436,461636116,74147401,148578385,807577294,570577736,90334793,93753993,4294967295,195045812
+	.word	286052524,168090010,227956032,852037940,826488098,143263129,631590949,4294967295,630587652,445143233,626288708,309115600,844187925,4294967295,886773288,340560461
+	.word	302568196,4294967295,4294967295,4294967295,875090090,4294967295,193634352,823595017,4294967295,889919756,718333254,4294967295,709977544,420798486,358168352,458491653
+	.word	4294967295,4294967295,895893830,4294967295,214591794,844386770,4294967295,90595588,671244712,443079464,447502545,575098888,843330242,488706889,193542848,4294967295
+	.word	885280785,4294967295,4294967295,877737617,303719568,438985898,4294967295,711289410,4294967295,4294967295,4294967295,714229506,338060965,806621716,4294967295,606233224
+	.word	281563140,619485858,4294967295,4294967295,461932714,60103062,4294967295,193603104,4294967295,4294967295,146892328,889919776,169526714,4294967295,4294967295,822486725
+	.word	573362470,563257728,4294967295,4294967295,316301456,147482914,211436961,705062440,4294967295,4294967295,746734648,85140153,147458618,411066516,188760520,4294967295
+	.word	4294967295,609689626,4294967295,4294967295,354564116,810830230,152459337,4294967295,17607332,4294967295,4294967295,4294967295,94052557,4294967295,22882884,440691410
+	.word	274205452,731324432,731120817,539178292,442028808,9589337,4294967295,4294967295,86813348,4294967295,826841513,841275940,4294967295,210855444,203708881,10963588
+	.word	4294967295,584131269,471017233,270979250,182273034,608437014,187487658,612590208,187310861,211308569,293620428,671228504,189577768,327686221,177801657,4294967295
+	.word	187468430,4294967295,177813524,441090586,227554001,26812869,51796809,4294967295,4294967295,671400153,454714661,161893026,4294967295,4294967295,303437332,470492729
+	.word	861357097,308733505,458763073,539250874,543242969,810235426,470077990,552216352,756115660,893718912,350882394,4294967295,848376358,303706629,756819148,4294967295
+	.word	4294967295,882266289,4294967295,184978073,721823832,411046420,715547810,558295300,4294967295,706914904,487200777,856961078,718332198,12937366,4294967295,327857329
+	.word	4294967295,455890240,441731905,4294967295,4294967295,188760345,690225934,43817428,21800492,4294967295,697770565,491554377,497230498,681001760,22810928,537563481
+	.word	219554581,487204646,548047620,690238533,631320758,730149440,336377429,306776730,680919193,308831670,814105813,8938646,4294967295,854067492,182019330,353162693
+	.word	742679042,176576002,4294967295,4294967295,210850257,4294967295,4294967295,4294967295,80946004,609036994,182737440,463077520,438454938,339788180,176997026,4294967295
+	.word	896049326,731137441,472389429,4294967295,557855492,4294967295,4294967295,4294967295,4294967295,4294967295,747177145,470588112,153440270,4294967295,857148068,177945346
+	.word	557867144,873877649,4294967295,4294967295,550184153,575441206,329912864,853674664,887227016,404525706,487597844,714225745,4294967295,579560576,718021125,4294967295
+	.word	6705426,4294967295,4294967295,4294967295,4294967295,715211981,457510993,493094405,575965593,812124598,216080916,209769016,4294967295,815274068,4294967295,814288918
+	.word	328763828,4294967295,713164592,4294967295,4294967295,4294967295,89723193,294130114,9212460,14996024,11224877,539683236,593531720,320300244,180634304,843723056
+	.word	405612068,747423780,557868233,541153752,763934020,27936938,891365518,4294967295,625085261,4294967295,51157260,4294967295,4294967295,4294967295,4294967295,4294967295
+	.word	559048781,4294967295,705042194,181162561,680069272,216295958,543427412,4294967295,135058958,4294967295,4294967295,4294967295,879051202,405608112,176982604,820025620
+	.word	4294967295,457369129,155499298,895883569,4294967295,324219481,743225600,893911177,440686673,696648004,4294967295,4294967295,741123462,303711385,880850101,4294967295
+	.word	543447457,4294967295,826874312,406865577,847949905,671879688,723937601,826708520,547369173,4294967295,496586758,295880150,210522190,454302486,353394829,183306930
+	.word	176745154,707269050,27798188,223816496,420287112,563818689,476336977,4294967295,464144577,4294967295,185424320,746986009,59283788,274518034,54995544,4294967295
+	.word	176589654,169485777,4294967295,328929836,683959302,309112880,757414720,873910409,605721882,593305637,295129601,201638356,9196110,52126924,145272889,4294967295
+	.word	282740824,17214137,19163852,4294967295,4294967295,816449740,137177804,328418754,4294967295,4294967295,459084096,594321830,211502849,4294967295,441542197,4294967295
+	.word	894697874,357642841,492849337,684460612,4294967295,614107610,227824081,216098356,337789613,580014860,316728497,711483778,5035530,474694937,320871212,873895186
+	.word	336259276,81322132,160696013,542396801,4294967295,474702865,4294967295,177257170,155747630,675563970,186077441,446883458,743228873,145557936,572347716,690120104
+	.word	362955436,4294967295,4294967295,4294967295,51164328,282289238,4294967295,4294967295,411601044,845232466,546530324,715141925,4294967295,220485722,4294967295,631910469
+	.word	281543897,4294967295,562450568,320473478,4294967295,4294967295,809811989,4294967295,362878540,806688400,4294967295,195700268,296243362,137147945,4294967295,707204441
+	.word	18048468,710418445,470603976,560359748,275462194,446358690,4294967295,4294967295,22880428,4863321,13931281,4294967295,4294967295,152307157,4294967295,4294967295
+	.word	438903993,4294967295,684507430,4294967295,329910477,149719382,5031338,420094790,170344730,168082066,308853442,843319852,496272949,683762898,144066580,329469996
+	.word	4294967295,4294967295,4294967295,474547508,675842473,422383658,559048716,216355328,717756737,18659606,340580817,4294967295,202925772,14967988,438902968,15507634
+	.word	710198681,4294967295,304232210,717506746,890573517,292030906,885723145,549722166,559294533,560260480,539257540,895781453,478284376,886641704,149725858,407134928
+	.word	308765744,4294967295,537290068,744906792,14359049,891687989,538124694,874652050,316458197,476333858,723527110,4294967295,445421654,325191470,861096204,4294967295
+	.word	550701333,405620020,574894138,732342852,4294967295,583305924,596727109,194263697,4294967295,168473177,479416337,4294967295,349325016,194644394,4294967295,895627304
+	.word	4294967295,847923342,475845704,571123854,445793985,309103190,316827730,155584337,4294967295,4294967295,211248641,316462597,675883084,357643088,155608137,4294967295
+	.word	558007689,606812360,424478980,593564088,5917005,4294967295,155600193,328599761,191433049,4294967295,4294967295,17061317,168438605,4294967295,4294967295,155592281
+	.word	16934228,19065258,307980300,60204596,558019624,4294967295,160717358,4294967295,473983496,4294967295,4294967295,438593062,4294967295,625031494,430049970,4294967295
+	.word	707015194,4294967295,497373730,875041108,810027434,281842706,4294967295,895553870,23863822,470589620,689223458,59918760,814090450,349869858,895564102,574711086
+	.word	84027220,4294967295,572939077,856105028,6050344,4294967295,203700953,690121026,4294967295,15230134,419587113,4294967295,446700241,185673176,580007700,4294967295
+	.word	219808525,4294967295,306795609,182540592,210847500,170676498,94657028,4294967295,807588274,8808113,819205698,327846278,315644121,4294967295,4294967295,352806037
+	.word	419586388,458384392,757469442,764421644,407130690,4294967295,4294967295,583079732,9902896,15508690,707183801,81929905,573188549,227977298,203182353,320639648
+	.word	4294967295,360781396,617436168,491014149,4294967295,323043544,4294967295,94909609,4294967295,885073108,170672533,4294967295,409035336,18650537,719111237,328249990
+	.word	4294967295,697873481,457998886,438616762,719512656,595632269,721511598,593627560,306886146,4294967295,681141420,155453005,877744465,571615705,327726240,4862265
+	.word	4294967295,178678304,157295409,722936890,4294967295,742853450,19681450,883512772,4294967295,4294967295,4294967295,478728248,766025890,4294967295,4294967295,327300694
+	.word	5988877,580736045,271071012,570860373,152130905,186470441,15384760,745072066,191635858,4294967295,43862156,4294967295,4294967295,4294967295,403317969,4294967295
+	.word	4294967295,455795842,4294967295,708852049,496259265,4294967295,4294967295,4294967295,228131272,180684344,443351624,596850976,155714312,630661281,851493576,21161230
+	.word	307825045,4294967295,596650662,320622785,4294967295,147587592,476579513,294010884,4294967295,715950290,10662426,454125225,4294967295,4294967295,885527200,721850713
+	.word	822547477,17966490,4294967295,447253332,78210516,407112218,541800704,4294967295,4294967295,478970001,746736033,4294967295,827474346,615265953,320279361,440664784
+	.word	269015513,696697000,690225305,180430640,148677250,562312261,60503593,809894544,574907444,293745280,4294967295,54958361,4294967295,290621913,187337550,560145196
+	.word	722600328,474614362,10884914,90487602,4294967295,323170385,304237364,211289868,885267152,411062808,182019125,723707944,755829190,721760325,4294967295,488834777
+	.word	880892048,697599396,558172550,186921658,4777642,4294967295,4294967295,290635820,840321172,497029810,359011385,819496244,4294967295,323544110,306577941,54813197
+	.word	606810424,847255052,454699138,459545089,696665281,604164552,220523148,493357225,4294967295,745048334,22294681,612832281,581647140,4294967295,710713746,4294967295
+	.word	4294967295,579484453,182780504,629607048,151016921,629277384,4294967295,4294967295,541513769,740451785,18700488,714480193,226566609,854138934,680027213,442843224
+	.word	4294967295,209775188,811009680,147351574,698485168,896078156,4294967295,545330005,470597844,856863010,76333444,872817360,4294967295,4294967295,42428564,4294967295
+	.word	318900666,194466826,469979658,4294967295,885694533,592720001,820255442,713853454,723918854,4294967295,4294967295,160989462,721848520,327194004,4294967295,704833068
+	.word	4294967295,721566496,220287290,48785716,709910796,203698996,873776580,189870664,857868596,325478560,711492876,461671090,877315405,442043032,287401397,4641369
+	.word	453116244,895633858,722927896,4294967295,8935833,682377604,88694952,8926038,348985026,4294967295,186733902,860918034,885069384,4294967295,563564745,293778114
+	.word	4294967295,564333192,574710184,155475984,4294967295,550119577,742994690,479793881,881199824,4294967295,54978738,4294967295,579233942,817900210,4294967295,4294967295
+	.word	541119897,4294967295,549628578,21416106,579471802,472143653,17209654,7153236,441239626,454103380,185939797,39215752,458309832,413798425,4294967295,210847540
+	.word	4294967295,4928329,618751656,93540686,752885905,672973256,89701160,674010506,4294967295,12933658,721688396,308963372,893911492,680079397,810037524,546396569
+	.word	813783244,16921224,4294967295,9220613,543477816,856971436,44198452,308106640,685515330,203838218,13200006,27924780,5792392,895558148,810100354,4294967295
+	.word	722680578,438919816,889454772,4294967295,227558668,4294967295,881934726,874656458,4294967295,155271560,4294967295,412242690,724316170,4294967295,337859026,328413237
+	.word	439144740,4294967295,442783792,288002060,316458114,86698376,12725044,459544594,319599238,739455249,59290246,4294967295,4294967295,4294967295,190883628,4294967295
+	.word	17051833,13899290,11016846,710412633,882918869,4294967295,4294967295,455876677,189343168,327726228,4294967295,194525206,4294967295,323142412,709454158,4294967295
+	.word	348788289,4294967295,718029862,612762453,4294967295,809589009,857088672,874781204,194578709,896082370,9230801,671486736,4294967295,321295444,4294967295,4294967295
+	.word	579955092,338041364,4294967295,688318754,195300012,4294967295,713589178,439017640,168089145,883054125,852646178,134632200,4294967295,4294967295,4294967295,17502986
+	.word	17618092,593921209,707544201,4294967295,537187500,4294967295,813749420,756822025,336746256,195080882,455235640,181478230,214460424,427967560,403991044,4294967295
+	.word	4294967295,4294967295,187500232,684221733,750864644,193364533,4294967295,8984248,357647513,440992585,442279553,4294967295,176742818,4294967295,86708536,606495370
+	.word	876894722,88253005,4294967295,461459760,460069152,446372626,541501204,4294967295,4294967295,885196081,4294967295,882000942,327202470,9581393,4294967295,597821740
+	.word	840339762,155607298,891703365,4294967295,630457734,4294967295,27548198,615123385,352511054,4294967295,4294967295,40428950,4294967295,4294967295,882262036,4294967295
+	.word	742991321,843471153,597694888,738762924,4294967295,4294967295,883634224,46977330,5024300,53131045,315364001,424158978,549523801,136861005,885565570,4294967295
+	.word	675329576,307971873,193593737,464134150,741150989,4294967295,4294967295,690127289,471098884,349203028,4294967295,4294967295,4294967295,4294967295,302387800,194263060
+	.word	4294967295,438520122,4294967295,289931404,877744712,4294967295,848709825,718083344,496640005,719366361,874692918,4294967295,683861577,350049457,706880301,323413202
+	.word	4294967295,4294967295,425762994,168182425,4294967295,338309700,27793064,4294967295,572811973,134637906,4294967295,805976644,4294967295,321262274,211239956,318812340
+	.word	4294967295,19572518,9000108,153494306,826417569,338040373,619316409,4294967295,881374277,810045452,5776044,4294967295,877273165,813842444,4294967295,845826464
+	.word	315647189,216533302,189030417,4294967295,454220617,630594178,4294967295,562319405,496151217,8970388,860963148,308863412,841658918,731453708,713114042,324487940
+	.word	4294967295,455109284,441123666,60168712,882247206,470585680,4294967295,325469990,94647985,845417136,4294967295,597103636,4294967295,886638932,885577768,189194312
+	.word	598122626,188825993,295109844,885530646,23355910,883624516,429164693,872994117,181084760,4294967295,580965530,585247392,4294967295,16917260,189178456,4294967295
+	.word	23640324,721559961,191457602,209761072,881283652,879364682,579267206,4294967295,14247189,4294967295,753441058,4294967295,4294967295,731455557,21113298,710949168
+	.word	77747984,4294967295,336736921,893727874,683753689,488854304,560208673,191275857,4294967295,9230546,269269713,551200578,822345868,719853856,4294967295,4294967295
+	.word	447484469,329824310,688660620,4294967295,442124298,891299269,4294967295,147326633,4294967295,619340102,557880728,304231066,4294967295,718872602,719362890,810170378
+	.word	878716469,4294967295,19157401,86817078,879442466,596969893,4294967295,420743865,673669704,710949145,4294967295,27538117,442271273,743926082,290212258,575322920
+	.word	4294967295,309019456,4294967295,4294967295,4294967295,746676644,4294967295,706045392,889672865,11233668,72950581,875045581,157583148,4294967295,4482513,808139012
+	.word	228239886,4294967295,550144218,585236761,625783110,752096066,4294967295,541533913,470500169,4294967295,183320648,4294967295,4294967295,811095432,4294967295,9916633
+	.word	843336148,855644809,160997390,715574086,214656513,4294967295,881328804,327850498,181176906,4294967295,135045585,878381388,40129294,194331010,4294967295,170598842
+	.word	4294967295,4294967295,6858382,48898586,143082518,609886233,584738885,189277197,4294967295,4294967295,459590437,709290258,843129296,302813838,74240588,57022809
+	.word	612521402,675330354,4294967295,462492201,756422472,4294967295,8819476,13978245,4294967295,19544869,705914282,155470670,709965137,718345040,4294967295,579496066
+	.word	4294967295,430573768,4294967295,4294967295,288002490,4294967295,4294967295,4294967295,324223385,4294967295,21808396,282153144,606251446,4294967295,584782594,4294967295
+	.word	4294967295,4294967295,81027780,362464300,541501238,550767269,210855468,895562052,604659912,19588398,571814072,19573156,181996168,86715212,5001736,145117785
+	.word	4294967295,412246673,4294967295,4294967295,38431246,618957653,757490889,4294967295,441092874,4294967295,4294967295,487362581,4294967295,543171350,441737874,4294967295
+	.word	340289198,891688194,21801100,749160258,338309957,59922990,4294967295,747407565,85369686,562738248,190657873,4294967295,25434638,885557962,577380378,5718805
+	.word	285291332,445403313,14837417,814160513,307778585,281109012,5780264,455158580,325203746,294866961,625094682,190652930,216846888,4294967295,181478965,470377672
+	.word	423893506,4294967295,354432697,15503926,4294967295,580609186,4294967295,475550018,614556884,753404122,549742754,4294967295,88367630,14967958,613193173,4294967295
+	.word	19681422,271233540,4294967295,750969090,306604566,4294967295,4294967295,705073993,316445749,4294967295,618948770,443306057,191662513,4294967295,4294967295,740472081
+	.word	403886601,46405394,4294967295,454762690,168051342,412238874,183065376,446859829,320246457,168614478,304240154,316282434,875122860,563229973,4294967295,145543746
+	.word	8960729,537148100,4294967295,439051812,303744846,462497412,4294967295,4294967295,15208793,304238994,4294967295,847956358,893428913,441748245,4294967295,445776656
+	.word	4294967295,475742553,4294967295,609616153,4294967295,606808900,161820753,887625814,697837572,743901754,304703878,203968813,4294967295,293732876,696715556,348963969
+	.word	713890240,72799801,550110501,704956602,564156556,329912770,731386190,491080480,676151688,4294967295,747424197,303870484,708920632,4294967295,145254048,80224470
+	.word	627192096,194586637,291649554,675545872,721887236,425986566,892012969,23652777,4294967295,730110338,490826280,675676680,707600560,4294967295,612853381,18691412
+	.word	453191320,462749842,4294967295,170677584,824464420,21407494,606343820,4294967295,4294967295,4294967295,675692568,4294967295,4294967295,478176464,14968486,227942481
+	.word	135947728,881474112,826676737,592587597,573322500,4294967295,281825792,168219473,885691969,4294967295,592713517,4294967295,438997562,4294967295,4294967295,894997544
+	.word	320690566,872829508,169273010,626078009,4294967295,707158534,303568310,355153732,4294967295,597840938,708913998,4294967295,457187877,363530828,4765450,80562378
+	.word	593761056,4294967295,169136600,4294967295,9590285,4294967295,597829684,4294967295,4294967295,19354408,826843141,462038064,675831816,4294967295,594321860,856757933
+	.word	537014936,847730692,491259684,4294967295,86250126,325151237,328864161,162050729,11036292,134619825,559310112,4630161,731256913,684508298,491267844,616851638
+	.word	4294967295,618701605,14994244,4294967295,4294967295,722954409,817899217,826671240,4294967295,160451209,4294967295,4294967295,612819028,592914586,807998733,574663062
+	.word	580702598,275383864,303870102,605689608,696656049,457729184,631314092,176830210,4294967295,584780036,673452433,876665384,885009073,715309506,453646362,22811017
+	.word	4891096,336740821,292061988,878387665,439050500,23863846,706516553,213992756,328806438,729885072,4294967295,4294967295,756163596,4294967295,739664389,4294967295
+	.word	4294967295,732436520,4294967295,4294967295,4294967295,350307092,78009861,224933896,413688452,550179585,15230628,4294967295,680607949,541111578,308820640,148203028
+	.word	320497090,4294967295,562045068,134493012,575080756,440664601,877199628,218925773,438479696,218933717,169423188,25441989,4294967295,176252590,545674433,472193624
+	.word	315643417,683992082,60367238,4294967295,428909062,454689544,4294967295,458494496,4294967295,194316886,4294967295,4294967295,443302530,491327512,4294967295,77742517
+	.word	496505537,328619138,160899713,814088708,872727180,4294967295,12904998,21312336,730907818,136599084,861292613,176216466,144783961,19047214,563140780,428917014
+	.word	874991920,181144137,169104921,4294967295,890930478,4294967295,4294967295,849384109,4294967295,12899866,462752434,4609561,493424648,436396680,303651654,4294967295
+	.word	438851801,4294967295,4795022,4294967295,152523098,4294967295,181421366,136880794,731382984,4294967295,543425294,715310137,496648513,273319313,459065514,458302224
+	.word	881247318,404394824,23337745,809903189,436889925,186672438,148670097,419569717,696519057,9049689,23468553,4294967295,463751844,4294967295,4294967295,169264857
+	.word	4294967295,805839252,15419610,687911064,4294967295,21181265,436390696,308939538,295227566,327717268,545917702,479790900,885720617,457368136,439003674,562319810
+	.word	491283649,747417730,4294967295,874202249,4294967295,558240578,204007118,419717140,705237832,615287190,355260462,764559629,363419810,606351546,715318689,357698381
+	.word	323127738,543578370,4294967295,7164361,285872536,4294967295,625239214,4294967295,890537164,4294967295,153879820,4294967295,51526454,723937410,4294967295,4294967295
+	.word	291574545,14197908,706898257,685020994,4294967295,303252236,631382701,411227970,423641864,4294967295,631526476,711264782,454108377,756061005,18100441,721559994
+	.word	4294967295,894845221,853825553,4294967295,169652746,50801461,303261356,724305289,178710162,224684449,4294967295,321259733,361764492,4294967295,4294967295,134886952
+	.word	4294967295,228153793,340150356,319895766,815806004,891343274,4294967295,840513750,184983608,429532304,476882576,4294967295,874788560,562733508,94060969,591751618
+	.word	853838422,893564177,606877956,4294967295,563155349,19535274,19151654,819202198,4294967295,673327506,4294967295,4294967295,596902030,462498309,4294967295,4294967295
+	.word	274336344,430049928,731423141,539237142,609301320,718350488,683761808,858199752,4294967295,676423049,27929042,4294967295,545741633,22241736,4294967295,268834393
+	.word	4294967295,458490457,314643252,461721669,48814233,4294967295,4294967295,4294967295,697598470,324571906,271398609,4294967295,894473618,4294967295,709960218,885072581
+	.word	462494353,226971906,348309590,182078282,4294967295,289807170,319906212,876618262,194388016,4294967295,223117580,4294967295,841168584,4294967295,303452933,4294967295
+	.word	572926648,4294967295,4294967295,4294967295,89926065,303911344,90457860,23471910,4294967295,88685382,631248297,618844185,4294967295,320294948,4294967295,4294967295
+	.word	189565513,853680642,584196152,348149914,179044818,881283141,882447796,545658585,4294967295,475832917,756417688,853694801,462755381,185279577,4294967295,12869780
+	.word	429151392,54925617,4294967295,152896916,756311492,195428886,845568321,10966233,742712398,4294967295,22287769,358025796,60037556,4294967295,21112365,697647109
+	.word	4294967295,596326720,4294967295,13373972,4294967295,441714386,181053458,22352472,709969709,80554706,306801090,4294967295,4294967295,4294967295,4294967295,181062410
+	.word	708897161,731189680,4294967295,453810486,4294967295,813699504,4860690,147327318,14361093,457709641,583160616,885130792,274289080,470592068,826352142,496143050
+	.word	170407189,4294967295,181982026,543891500,43410642,539636906,170705578,4294967295,723716906,677126226,42128952,4294967295,752929030,744767500,273320474,176819022
+	.word	755020584,572199257,75944517,4294967295,4294967295,441477705,488899332,707290566,617251001,181479252,479814692,4294967295,738767066,630206740,222880846,4294967295
+	.word	591799450,609486613,713856049,4294967295,4294967295,4294967295,419693316,4294967295,609564448,4294967295,4294967295,4294967295,42407634,705052998,883438660,281699505
+	.word	539144890,21121433,89985608,315810464,189874458,289605081,438882630,625023822,4294967295,4294967295,60179796,4294967295,625778848,227215948,308859961,613168770
+	.word	176842832,423650629,152700717,755239756,476129105,441542312,295194785,751636496,593770656,4294967295,689714436,738505510,4294967295,189074221,4294967295,744769582
+	.word	496702025,411910850,753018674,4294967295,94802600,55781900,134685520,51157332,156017196,4294967295,182225173,885171248,715657986,765857802,714158598,707543373
+	.word	4294967295,419586304,696397872,545264312,441017429,52697908,885575973,187049780,885080277,169681361,4294967295,269018262,606216858,822091924,4294967295,890392961
+	.word	323798052,4294967295,21406480,764940745,840190638,557973784,488854280,883049088,189090234,584077449,407134848,179005522,4941321,826672421,407392569,474677800
+	.word	680015065,4294967295,303719634,4294967295,496698916,4294967295,539302574,474686240,610625154,745320736,4294967295,169109169,43389492,575276842,4294967295,13276968
+	.word	6963657,4294967295,46973128,810824321,549491002,436392273,853681716,764856361,4294967295,462510217,441533192,411713730,462620982,575439304,4294967295,609487501
+	.word	187468490,4294967295,8801093,4294967295,563417760,4294967295,891572366,437938322,4294967295,847818900,348914837,402940048,4294967295,318912601,845470274,744502097
+	.word	304878133,718408520,48536217,744753593,4294967295,268583564,4294967295,349880450,688284840,721854624,742876433,4294967295,4294967295,446859865,303220397,4294967295
+	.word	4294967295,731039138,584145176,176208538,4294967295,4294967295,23863876,193628584,438585524,478810713,136659725,706032453,269108677,685312836,21312089,893919308
+	.word	8820498,4294967295,281203504,39212552,721727524,827786376,4294967295,17641812,188758297,575316014,875217286,740828973,176818765,881000913,157304620,717840545
+	.word	4294967295,625385657,717759268,720148562,4294967295,478734420,176883153,25305653,4294967295,81052501,596726184,575984429,23664952,676922700,5032268,81334938
+	.word	4294967295,883493510,4294967295,454300289,730346564,756101337,4294967295,177268148,629232813,710424328,59914582,563133098,308071041,4294967295,4294967295,454103830
+	.word	722473353,617358389,545917146,203993396,4294967295,430573738,4294967295,4294967295,4294967295,4294967295,47764772,457506960,548049314,896079948,4294967295,4294967295
+	.word	731197600,309147664,4294967295,303698476,4294967295,4294967295,209774222,619514056,9196046,176906252,419697280,4294967295,74238286,4294967295,187342904,4294967295
+	.word	19142073,631636648,717318724,25351562,13254808,4294967295,596793600,722810884,463736850,295875234,4294967295,4294967295,488903360,612591040,413750432,56795662
+	.word	455762181,756093352,746743342,194336333,885662277,191641618,323423056,152463016,320637612,204090124,22177072,458298969,4294967295,763574856,4294967295,4294967295
+	.word	271144409,190882610,186263341,94816904,195606186,440445493,4294967295,4294967295,357642394,4294967295,73819825,18491142,677136808,742983948,881202228,618291458
+	.word	877058322,303719889,696852516,13387465,478973974,5026096,187393449,606557444,744567056,439147050,538711692,4294967295,697637442,4294967295,675701841,4294967295
+	.word	308298137,203866792,6825644,329913394,195312194,575277482,4294967295,5710425,4294967295,4294967295,4294967295,811673260,303260180,545745604,5062988,685785401
+	.word	4294967295,4294967295,8971406,4294967295,21324972,572330408,411703088,571763126,287389909,877742420,4294967295,88523033,751970128,627206602,4294967295,4294967295
+	.word	677462856,228667698,4294967295,430588964,325204545,598119682,303621573,4294967295,574903712,218785070,596021334,348198576,696271236,893403398,441995552,189283113
+	.word	228205069,891982144,722251814,4294967295,4294967295,340308820,613232709,4294967295,323782188,419564186,4294967295,4294967295,134501902,26751113,204124698,14949072
+	.word	429999254,562058565,6773008,4294967295,705176388,704825800,211225296,4294967295,9191844,320473305,893917442,22308396,875181349,143151128,6113672,4294967295
+	.word	630921289,219613497,182061578,545654613,84321076,86271189,551609992,885545160,4294967295,441541972,874664525,193536436,853875376,19163316,181717781,26397326
+	.word	4294967295,572680840,185356744,4294967295,4294967295,757928226,680673689,4294967295,894648396,711756201,57457224,146874936,4294967295,321081390,188753678,4294967295
+	.word	5859733,210848212,881477762,814957580,550278824,4294967295,4294967295,4294967295,707537316,893563977,4294967295,585237258,496116289,8832676,470590148,441525073
+	.word	15227080,19051178,627180332,559065934,4294967295,487610504,4294967295,193216532,4294967295,17977613,16930137,18616777,591685837,4294967295,4294967295,4294967295
+	.word	17506776,731259040,550312648,4294967295,706880014,446875353,4294967295,4294967295,496050896,151020885,438456888,743918376,9987276,328353409,408554041,744777250
+	.word	4294967295,210590274,562432325,478155350,856955330,151397186,182232721,4294967295,445829136,212533772,454316185,43824660,23356942,4294967295,474220241,4294967295
+	.word	22226320,4294967295,496260258,26489489,176965326,4294967295,4294967295,463734326,4294967295,4294967295,573331880,615331524,4294967295,4294967295,598117028,439012136
+	.word	889509069,444680344,441734160,419713176,545652884,4294967295,357712685,4294967295,38348590,194708936,187107642,630597717,4294967295,17502540,421814420,303641272
+	.word	550277834,38230833,680604434,732442917,549643574,4294967295,575441612,304564953,857354245,303490646,706135333,4294967295,723544332,696388168,321697942,26428046
+	.word	169433356,420094724,487753513,572790202,808096170,4294967295,4294967295,717392410,403858706,402809430,222561817,4294967295,285611713,4294967295,862060817,4294967295
+	.word	21160208,454189064,4909394,539190666,572220868,4294967295,4294967295,543843616,4294967295,4294967295,342509658,184836736,546726918,4763962,4294967295,15340298
+	.word	713492057,4294967295,25837861,178711074,890909896,856948886,764594446,4294967295,889618725,4294967295,721494862,147088016,4294967295,817910276,405329209,823396036
+	.word	9594324,308709049,594325544,4294967295,145241173,550200329,604152628,187316512,210850201,436935240,4294967295,14999764,684791633,182019412,4294967295,721694881
+	.word	4294967295,807586068,357040902,17999694,596904358,318821798,461953350,891486676,147114041,322980293,4294967295,147121842,4294967295,612586252,614642466,4294967295
+	.word	539243705,189171986,894702668,147082068,39335193,4294967295,885211850,4294967295,495145992,26423569,4294967295,593801274,4294967295,887226932,724345250,185690390
+	.word	893428941,673789096,4294967295,191291904,204170546,89482661,4294967295,285627609,4294967295,746676368,4294967295,4294967295,714936369,4294967295,676930009,731007298
+	.word	4294967295,4294967295,4294967295,308073485,893438346,895623724,219440140,4294967295,697516320,439044937,730153380,60332340,4294967295,176843340,76177810,4294967295
+	.word	4294967295,281240593,14832402,170415496,606802378,4294967295,77750957,573313741,4294967295,730137166,574706510,4294967295,319219862,717392208,4294967295,676115760
+	.word	840307377,549540056,545928965,4294967295,403202696,696846541,596949636,563488386,4294967295,457218362,27538065,545416865,470601938,463017045,4294967295,4294967295
+	.word	4294967295,4294967295,746637497,420271274,613187724,883638476,214631705,707193380,286011573,4294967295,336245338,4294967295,454120196,180619866,4294967295,430573712
+	.word	350309017,723649962,684499520,454219816,13918854,4294967295,422217882,479347394,4294967295,4294967295,403907376,170272434,4294967295,876663085,479225044,749539906
+	.word	625345720,203962132,4294967295,93902245,573191305,4294967295,547030788,169495306,22295737,228214049,186460181,317327570,348260948,4294967295,406934832,303449817
+	.word	625220056,627451065,673597626,848970925,21390885,4294967295,58901812,216090901,186078466,27545746,4294967295,4294967295,630495886,324427824,73048474,707279657
+	.word	86267321,54801592,405018453,4294967295,4294967295,756287244,877741398,4294967295,839127476,321087564,4294967295,4294967295,320997816,4294967295,4294967295,550294538
+	.word	683747908,439142693,25645328,885589173,403312912,329812645,320648866,4294967295,308306577,4294967295,805590436,4294967295,826681489,546092708,202859796,4294967295
+	.word	4294967295,812169492,613048450,625777097,4294967295,4294967295,317331545,459368786,21152521,886341781,573183786,4294967295,671278354,575416757,4294967295,304505490
+	.word	572306054,362449349,328809094,488673588,4294967295,584884244,148194328,732334340,187302670,492900888,325654978,697308684,4294967295,4294967295,4294967295,4294967295
+	.word	73966254,744766226,4294967295,676606993,847725696,339829268,82448658,170353941,309103148,181961432,615290926,4294967295,191104814,323421785,696402252,4294967295
+	.word	545411480,891360692,740082989,675334489,683828801,4294967295,4294967295,889324174,562697289,222643673,4294967295,4294967295,560203172,683803993,4294967295,52072889
+	.word	4294967295,438479664,891688276,895829061,731910445,4294967295,849430964,411703042,13920965,894713986,487596854,155478401,25703637,4294967295,558294278,94786089
+	.word	4294967295,218181972,887392966,4294967295,844630485,4863761,4294967295,4294967295,594319810,4294967295,4294967295,25446868,717449504,86729156,363336780,882445004
+	.word	543449805,559290122,717318470,549542088,4294967295,4294967295,4294967295,43796902,317489828,9068932,885266130,841361956,454187841,710740368,186083382,593793474
+	.word	891495116,4294967295,883503297,43555252,805851272,423757137,443296341,152700217,323782860,543830794,404525393,4294967295,423781961,4294967295,147595904,490783530
+	.word	4294967295,438588178,731259024,685335689,193372242,885561428,718891144,4294967295,881999956,4294967295,4294967295,21324944,4294967295,423765081,342416162,13377680
+	.word	742842642,606235016,4294967295,688008000,88270160,461443408,227627534,4294967295,13817104,4294967295,593652104,19157445,320002498,4294967295,541123861,214189761
+	.word	43570956,854205478,4294967295,314657434,681358513,575453206,4294967295,323041860,584246529,551330868,859873734,4294967295,4294967295,404365465,496156724,673801606
+	.word	606365141,4294967295,42121008,4294967295,807085572,178702389,4294967295,204136872,4294967295,674043181,4294967295,676118541,8984021,4294967295,4294967295,4294967295
+	.word	579293985,53175470,338221198,4294967295,4294967295,459556646,176982448,886638885,210453592,4294967295,4294967295,423977104,222376776,592230658,489466530,9116494
+	.word	719373572,4294967295,323140400,405580374,4294967295,285626392,893812913,176219821,4294967295,4294967295,471094033,441525010,4294967295,490897992,441108762,4294967295
+	.word	723673102,224478650,894698896,875207080,464001729,4294967295,441116690,895492620,461656193,134633256,362829233,4294967295,488925890,229262412,4294967295,424157240
+	.word	323799212,713070010,681089038,4294967295,8935628,169398586,4294967295,328896945,805458320,321685925,8938148,891554502,4294967295,4294967295,303253978,4294967295
+	.word	442587952,883624492,152502984,4294967295,756156685,4294967295,315151106,4294967295,4294967295,596903084,738485454,4294967295,4294967295,4294967295,327862414,4294967295
+	.word	170436313,189851213,746591054,542389889,4294967295,176571064,4294967295,4294967295,215777800,189834000,626466885,752951472,439146673,286983372,4294967295,579671117
+	.word	19016122,707009328,491554052,4294967295,17477818,496553994,618799924,4294967295,4294967295,152870934,292086798,4294967295,461455572,438964778,560341185,464132648
+	.word	549474474,890570956,4294967295,4294967295,4294967295,4294967295,4294967295,764981509,13132420,4294967295,4294967295,323551704,4294967295,93537992,25859474,826557633
+	.word	627847241,573188900,4294967295,729986336,538579225,4294967295,357646756,180880694,558008746,436882248,404374841,4294967295,885080404,537596748,4294967295,75948210
+	.word	609296853,224814368,190627852,59418148,4294967295,457386560,547115201,4294967295,9594573,183050325,268854981,732236229,608968782,675562541,6861608,152320822
+	.word	580314164,721719342,216679712,14961492,4294967295,4294967295,722635161,309090720,4294967295,224805928,214583386,22161997,713615778,539244229,442065154,407445560
+	.word	709264146,218550345,4294967295,329791540,461456036,328422924,739512785,325502758,4294967295,4294967295,626189325,591571022,4294967295,722247686,881381506,4294967295
+	.word	191117826,807687692,4294967295,818074896,4294967295,681350561,6709961,4294967295,51171718,56922514,327733638,147083288,26364361,13248069,222578444,822744385
+	.word	321262234,672732616,688006617,4294967295,13296777,625225753,76222904,152121690,302854800,617355522,709625390,697648516,562305730,537563578,4294967295,4294967295
+	.word	839014832,441535112,4294967295,709394734,4294967295,4294967295,73945513,730267908,294828628,151003788,4294967295,25448592,357958437,363399822,4294967295,445415568
+	.word	357657164,5910873,4294967295,4294967295,764805381,606885289,4294967295,4294967295,307055298,4294967295,4294967295,4294967295,186734382,889344076,177260204,496633137
+	.word	4294967295,4294967295,444748818,4294967295,148924104,547754786,562704512,168477096,4294967295,882266117,676102446,353768089,25313549,440682586,4629017,715953586
+	.word	4294967295,4294967295,12769072,891507082,4294967295,4294967295,697645138,224945442,4294967295,577526060,454887112,562332822,706143402,183239314,563160276,209765782
+	.word	706225932,25317768,156578561,186452237,281725090,81027252,13288602,134783672,8532504,4294967295,4294967295,4294967295,882907660,274216706,4294967295,191236904
+	.word	4294967295,596772180,696852486,56404432,689235138,324232657,159392148,877199829,874662536,807670418,439001298,340558288,272650764,292120005,478702242,4294967295
+	.word	575037717,681972289,405608785,134620825,441000704,19151638,4294967295,13391173,4294967295,4294967295,673465094,296225204,26954053,22489892,211562513,860127440
+	.word	304550554,169534929,4294967295,4294967295,885068113,4294967295,4294967295,4294967295,756097496,843340320,4294967295,423708488,4294967295,210569686,445467264,4294967295
+	.word	462440709,4294967295,4294967295,4294967295,882281170,4294967295,446222393,4294967295,542955905,4294967295,4294967295,549640249,454875424,675324685,437851413,227221890
+	.word	8937612,4294967295,338051224,52177334,4294967295,715539206,562078862,86675880,4294967295,15012528,4294967295,4294967295,282907138,350916633,4294967295,4294967295
+	.word	216098482,816337314,56773048,746656312,749166596,136591126,4294967295,459588644,46293648,537192070,4294967295,4294967295,626076057,182997272,847923360,4294967295
+	.word	304552534,4294967295,444779350,4294967295,4294967295,179056658,86260484,809581264,4294967295,883492492,856758742,671234384,713102926,4294967295,4294967295,4294967295
+	.word	4294967295,631256404,323424272,606758214,4294967295,4294967295,814105654,406921750,219637378,747201985,4294967295,27544020,159397585,324220944,4294967295,191267160
+	.word	881001168,559954056,4294967295,437462673,4294967295,855693580,819482761,4294967295,438571577,4294967295,219244200,181494034,440428041,4294967295,885260436,159778376
+	.word	550274340,186700218,19681480,93721233,181414489,572144392,15290536,57042470,677701198,187062312,27530709,26882565,4294967295,4294967295,281067701,4294967295
+	.word	321278082,698497610,580291270,187349314,442164776,883085858,6037973,407374678,210856652,186923034,874987846,4294967295,4294967295,680925265,853808178,176711126
+	.word	353054788,4294967295,22889860,471025353,4294967295,4294967295,4294967295,537153752,4294967295,285364608,476800050,4294967295,286995201,874988196,315230809,44438294
+	.word	609690329,323799170,353783937,875059460,181683906,320005166,4294967295,90612518,545939469,26429132,4294967295,438518538,890672406,709100076,181668689,883447201
+	.word	180446805,81007160,455304469,316892704,42489221,4294967295,4294967295,606777512,584722241,25860398,891564180,442519832,709944653,537154981,4294967295,194396169
+	.word	411866690,549586773,25727690,4294967295,26546702,147098390,4294967295,4294967295,61215378,543564857,86778509,323051952,464050212,454223125,718018633,4294967295
+	.word	885184770,281755842,4294967295,580261912,559743310,308701762,583150273,889279821,546517761,143743377,4294967295,4294967295,886377013,872715861,226568596,407642768
+	.word	442255042,181954633,629610784,223117778,4294967295,4294967295,844585234,4294967295,4294967295,4294967295,185413704,438979402,572811654,323184081,722798381,187106058
+	.word	152862990,186735034,441771665,721565442,458004768,4294967295,4294967295,4294967295,753440065,732337192,461447876,614544004,4294967295,424154393,137061929,765921573
+	.word	455808833,677972236,21128466,407112532,4294967295,756854794,420255368,608588874,461455686,23488689,201648716,764429764,224862786,4294967295,882456769,721722190
+	.word	853623944,4294967295,684877866,731910418,618849556,756164001,194531744,4294967295,4294967295,302662020,4294967295,327305602,479397396,4294967295,4294967295,4294967295
+	.word	747063489,177001024,814225068,4294967295,4294967295,717809801,430003376,21803145,187476418,9586380,304636294,4294967295,625772877,328866304,224934666,765855025
+	.word	22230552,894511557,811076008,718473553,488923156,4294967295,4294967295,455868565,559167234,4294967295,4294967295,182208833,718283524,550720832,304880048,810558004
+	.word	4294967295,4294967295,423780626,4294967295,25694856,4294967295,8836613,4294967295,445736656,847844437,307661618,23357618,616650073,4294967295,52080809,4294967295
+	.word	78189196,463643170,609499161,308367800,861274248,39466760,4294967295,4294967295,289588248,4294967295,676081922,817964690,705245528,874779028,291899972,4294967295
+	.type	rubik_asm_compact_perm_dist, @object
+	.size	rubik_asm_compact_perm_dist, 5040
+rubik_asm_compact_perm_dist:
+	.base64	"AAcHBgYGBwUGAQYGBgYGBgEGAQYGBwYFBwMDBgYGBQUGBgQEBAUFBAYFBgQFBQMFBQUEBgUEBgQGBAQFBgUDBAUFBQUGBQUEBgQFBQYDBgQHBgQEAwYEBAYFBQUGBgQDBgQEBQUFBAUGBgQEBAUEBQYFBQQFBQMFBwQFBQUFBAUFBgQFBQQFBQYFBgUFBQUGBQUFBgMFBgUDBAQGBgIEBQUGBQUGAwYFAwQEBQYGBgYGAwUEBQUFBQMFAgUGBQUGBgUFAgUFAQYGBQUGBgUGBQUCBgYCBQUGBgUFBwMEBgUDBQQFBQIFBQUGBQUGAwYEBQUFAwYFAwQGBgUFBAYF"
+	.base64	"BQUDBQYCBwUEBgUEBQUGBgUEBgQEBAUGBAUFBgMFBQQFBgQFBQQGBAYFBQQEBAUFBQUEBQUFBQMGBQQFBgQFBgYEBAUFBQQFBgUGBAYGAwUFBQYGAwUGAwUFBgUFBQYGBQUDBgUCBQYFBgUGBQIFBgYBBgYFBQIGBQYFBQUFAgYFBgUEBgUDBwQGBgMFBAYEAwUGBgQGBgUDBAYGAwYFAwUGBQYFBQYFBgUDBQUCBgYEBAUFBQQGBQUDBQUEBQQGBAQFBQUEBAUFBQUEBgYFBgUGBQMFBAUFBAUGBQQGBgUGAwQEBgUGBgUGAwUEBQYGBQIGAwUFBQUGBAQGBQUE"
+	.base64	"BgMGBQYEBAYEBQUFBQUFBgUEBQQEBQUFBgYGBQQEAwYGAwYGBQMFBgQFBQUFBgYCBQIGBAUGBgUBBgUFBAYGBQUCBQMFBQUGBQYGBQQEBAUFBQUEBQUFBQQGBAYFAwYFAwQFBQYFBQUFBQUDBQYCBgYEBgQEBQUFBgUFBwQDAwYFAwYGBgMFBgQGBQQEBgUFBQUFBQQFBQUEBQUFBAUGBAQFBQUGBQMFBgYDBQYEBAQGBgUGBAYFBAUGBAYGAwUFAwQGBQUFBQYFBgQDBQYCBgYFBwUEBQUFBQYFBgUFBQUFBQYEBgUFBAQFAwcFBQUFBQUFBAQGBgYFBAQFBAQG"
+	.base64	"BgYEBQUGBAYEBAQGBQUFBAUEBgQEBQYDBgUDBQQFBgQGBgUEBQYEBAMFBQUGBAUFBAUGBAYEBgUEBQUFBQQGBgYFBAQGBAMGBgYFBgUEBAQFBAUFBwQEBAUGAwYFBgQFBQQFBQYFBAYDBAQFBAUGBgYEBQUEBQQDBQUEBgMFBQQGBAUEBQQEBAMGBQYEBgUFBAQGBQUCBwUFBgYFBQMFBQUFAwQGBAMGBAYFBAUFBQYDBAQFAwYGBgUEBgQEBAUEBgUEBAQGBQUFBAYFBAYFBQYFBwQFAwYFBQQFBgUGBQIFBgUDBQYEBQMEBgUGBgUGAwQFBQUCBQYGBQYGBAMF"
+	.base64	"BgYFAwUFBAMEBQYGBQMFAwUFAgYFBQQEBAUFBQUDBAUDBAQGBgQFBgYFBgUGBgQEBAUFBAYGBQUGBQUEBgQDBQYGBAUGBgQEBQUGBAUFBgQEBQQGAQYGBQYGBgUGAgUFBQUGBQIFAgYFBgUFBgQFBQUEBgUFBwQEAwUFBAYGBgQGBgQEBQUGBwMEBgQEBAUEBQQDBQUGBQYGBAQEAwUGBQQEBQMFBAYFBAUEBQQFBAYEBQUEBgUFBQQEBQQDBgUGBgQFBQYFBQYEBAYEBgUFAgUFAwYFBwUFBAUFBAYDBgQDBgUFAgUGBQQEBgMFAwYFBAUEBQMGAwUFBQUEBQUG"
+	.base64	"BAQFBAUDBQYGBQQGBgUDBAUEBAYFBQYDBAUGBQYFBQQFBgUFBAUFBAQEBAYFBQQGBQYFBAUFBQYFBQUEBgQFBAUFBQQFBQYGBQIFBQQDBQYFBgMFBQQGBQUGAwUEBgYDBAYGBAUGBQQFBQYGBAUEBQQEBQYFBAMFBAYEAwUGBAUEBAUFBgQEAwYEBQQFBQQEBQYFBgUFBgQEBAYFAwUGBgQFBgUEBgUEBAQFBAUEBgUEBQQGBQYEBwQDBQUFBAQGBQUFBgQGBQUEAwYFBgQGBQYFBQQFBAYFAwYGBAUFBAQFBQYGBQUEBQQEBQYFBQYFBQQEBgQDBQUGBgQFBAQF"
+	.base64	"BQQGBAYEBAUHBQUFBgQGBQYFBAUFBgQFBQYFBQQFBgUFBQUEBQQGBQUFBgUDBgYFBQUGBQUEBQYFAwQGBAYFBAYFBQUGBgUEBAUEBQYGBQYFBQMEBQUEBQUFBgQFBAUFBgUEBAYFAgUHBQYFBQQFAwYFBQUFBgMEAwYEBQYFBQUFAwQGBAUFBQUFBQUGBQQEBQQEBQYGBQUEBgYFBQYFBQQFBQUGBQUFBAUGBQQGAwYFBAYFBQYGBAQGBgUFBAQFBAQFBgUFBAMGBAUFBQQGBQYDAgYFBQUFBQUEBgMFBQUGBQMEBQQEBAUFBgQDBgUFBQYFBAUEBgQEBgUEBQUF"
+	.base64	"BgUFBQQFBQYFBQUFBQUFBQYFBAUFBAYFBAUGBgUFBgUFBQYEBAYGBgQGBAUEBAQGBQYEBQYDBgYFBQUFBgQEBQQDBgUEBQUFBQQFBQQFBAUFBAQGBQUFBAMFBAUFAwYGBAYEBAYFBgQEAwYEBQQGBQYEBAYFBQQFBAUFBgUFBQUFBQUEBQYFBQQGBgUEBQUFBQUFBQQEBgYFBQYGBQUFBQQFBQQGBAYEBQUFBQMGBQUFBgYFBAQHBgYEBAUEBQUEBQUFBgUFBQYFBgQEBQYFAwYFBAQGBQUFBAUGBQUFBAQFBAUFBQYFBAQFBQQFBgQFBQUEAwUFBAUGBQUFBQQF"
+	.base64	"BQUFBQUGBAYFBgUGBgQGBgUFBQYFBQUHBAYEBQUEBQUFBQQGBQQFBQUFBAUGBQYFBAQFBQUFBgQGBQYEAwYFBQUGBQYFBgQFBgYGBAQFBQUEBQUFBQUEBQYEBgYEBQYFBQQEBwUDBgQEBQQFBQQEBAUGBAUGBQUEBQYFBgQDBgMFBAUFBQQCBQUGBQYHBQUDBgUGAgUFAQYGBQUGBgYFBgUCBQYCBQUFBQUFBgMEBgQCBgUGBQMFBAUFBQUFAwYEAgYFBQUGBQUGAwQGBgYGBQMEAwQEBgUGBQYDBgUFBQQFBAQGBwUEBAQFBAQFBAYFBQYFBAMGBQYCBQUFBQMH"
+	.base64	"BQYEBQQFAwUGBwQEBgYEBgUGBgMEAwUFAwYFBgQFBgQEBQYFBAUFBAQGBgUFBgYFBQUEBgQDBQYEBQUFBQQFBQQDBQUEBQQFBAQFBQQEBAUFBAUFBQUGBgUFBQQFBAUFBAQGBAUFBgUGAwYFBgQFBgQFBAQGBgUFBAQFBAQFBQYEBAUFBQUGBgUFBAYEBAQFBgQGAwUGBQQFBQUEBgQEBQQEBAMGBgMDBAUFBAQGBAUEBgMFBgUEBgQGBQQDAgYFBAYGBgUFBgMFBAYGBgMEBQMEBQYFBgQEBQQGBQUGBAUEBAMFBgUEBQQGBAYEBAUDBgQFAwYGBgQEBQUGBAMG"
+	.base64	"AwYEBAUFBQQGBgQEBQUEBAQHBQUFBQQFBgQDBQUEBAQFBQQGBQQFBAUFBgUFBAYFBQQGBgUGBgUFBAYFBgQEBQUEBQQGBgYEBQUFBQYEBAYFBgUFBAUGBQMFBgUGBAMFAwUEBQUFBQQFBgUEBQYEBAQFBAQFBgUDBQMFBAQFBQQCBQQFAwUGBQUDBQQFBQQGBQYEBQUFBQMGBgUFBAYGBAQGBQYGBAQGAwUFBAYGBQUGBQQEBAYEBQUGBgYEBQUEBgUFBQUHBgQEBQYFBgUFBAYFBAUFBgQEBgQEBQQFBAQEBAUHBQUGBQUDBgQGBgQEBQUEBQUFBAMFBgYFBQYG"
+	.base64	"BAQFBQUFAwYFAgUFBAYGBgYEBgUDBAYDBgUFBAYEBQUFBgUEBQQFBgUFBAQGBQMFBQYEBQQGBQQHBgYDBQYEAwQGBQYGBQUFBAQGBAQGBQYEBAUGBAYEBAYFBgQEAwUFBQMFBgUFBgMFBgUDBQYEBQIEBgYFBQYFAwQFBQYCBgYFBgUGBAMFBgUEAwUGBAMFBQYFBgQEBAQFAwYEBQMFBQQFBAYEBQQEAwQGBgMFBQUFBQQFBgUEBAUEBQUGBgYFBgQEBAYFBAUFBQUFBAQFBgYFBQMFBAUFBQYEBgUDBgUEBgUFBQQFBgUEBAUFBQQGBAUEBAQFBgQFBgUFBAUF"
+	.base64	"BQUEBQQFAwYGBQQFBgYFBAUEBQMGBgUFBQUEBAUFBgUEBgYEBgQEBQQFBQYEBQQFBQQFBQYEBQUFAwUGBQYGBAUEBAQEBQYFBQUFBQYEBgUDBAYFBgUEAwQFBAYFBgQFBAUGAwYEBQQEBQUGAwYFBQMFBgQEBAUFBQQFBAQGBAUGBAYFBQUFBAMFBQUCBgUFBQMGBQYEBQQEAwYGBAUEAwUGBAYFBAUEBQYGBQQEAwUEBQUFBQQFBQQFBQUFBgUEAwUFBQYGBgQFBQQEBQQGBQQDBgQDBgYFBQQEBQYFBQYFBAUEBgQFAgYFAQYGBQUFBQUFBgYCBQYCBQQGBQUD"
+	.base64	"BgYGBgYFBAQEBQUGBAQGBAQFBgUFBAUFBQUGBgYEBQUFBAUGBAUFBQQFBQUFAgUGBQUFBQQGAwYFBAYFBQMFAwUEBgUEBgQCBgYFBQQGBgMFBQUFAwUGBQMGBgQFBAUFBgQEBQUFAwQFBgUEBQQGBAUGBQUFBgQFBgYDBQQGBgUFBAYEBQYGBQQFBQQEBgQEBQYFBAUGBgUFBQUEBQYFBQUFBQQFBgUEBAYFBAQFBgQGBgUFBQUEBgUFBgUFAwQGBAUFBAUFBAYEAwYFBQQEBAUDBgQEBAQDBgYGBQYGBQMFBQYGBAUFBQQGBgQFBQYFBQQEBQUEBAUGBgQEBgUG"
+	.base64	"BQYGAwYFBAUGAwUFBAQGBQYFBAYFBQQEBQUEBgUFBQUEAwUFBAQFBQMGBgUFBAYEBgQEBAYFAwYEBgUEBgUFAwUGBgUFBQMGAgUGBAUFBgMFBgQEBQQFBgYEBAUDBgUFBQYGBQQEBQQFBQMGBQYEBgUEAwQGBQUFBgQEBAQFBQYFBgQFBgQDBQUGBQQFBAUFBAUGBAYFBQYGBAUGBAUFBQYFBQQFBgQEBQYDBAYGBgMFBQYEBQQHBQYEBAYDBQYFBQUGBgMEBgUDBQUEBQUFBQQGBgQFBAYEBQQFBAUFBQMFBQQFBAYFBAUEBAUGBgUFBAUFBQQGBQYEBAUFBAQG"
+	.base64	"BQUFBQYFBQYFBgUEBQYFBgQFBQQFBgYEBQUEAwUGBQUGBgQFBQQGBQYFBgQEBQQDBgUGBgQFBAUFBgUFBAcEBAUFBAQFAwYFBAYFBgUFBgQEAwYEBQYGBgQCBQYGBAUGBgMFBQUGAwUFBgMFBQQGBAQEBgUEBgUFBQMFBQQEBAUGBAQHBQUEBgYEBQUFBQQEBgUGBgUFBAUEBgUFBQUEBAMGBAQGBAUFBQYDAgUGBQUEBQUDBQMFAwUEBQUGBgUGBAQGBQYGAwQFBAMGBgUFBgUFBAUDBQQEBQYGBgQEBQYFBgYFBAYEBQYGBAUGBAUGBQcFBQUGBgQFBQYFBQYF"
+	.base64	"BQQDBQUFBQYFBQQFBQUFBAUEBAQFBAUGAwYFBAUGBQYFBAQGBgYGBAQEBAQFBQcFBQUGBAYDBQIGBgYFBAYDBQUFBgYFBgUDBQUGBQQGBgYEBAYEBAQFBQUGBAUFBQQGBAYEBQUFBQUFBQUFBQYFBAUGBQQGBgYEBQMFBgUFBQUGBQYEBAUEBgUFBAYGBgQFBQUGBAMFBAYEBQYGBgQFBgUEBgUEBAUGBAUFBQQFBgQEBQUEBAUFBQUGBQQFBQUFBgUEBAYGBAUGBgQGBgUFBQcEBgQFBQUFBQMFBgYEBQUGBQYEBAYEBgUFBAUGBgQFBAYFBQQEBQQFAwUGBQQD"
+	.base64	"BgQGBAYGBAUEBQQGAwYFAgUHBQUFBQYEBQYDBQUDBgUEBAUFBgQEBwQDBQUFBAQFBAUGBAUGBAUEAwUFBAQFBAYFBAUFBQUGBgQDBAUEBQQGBQYDBgYEBgQGBAQFBgUDBAUGBAQFBQUEBAUGBQQGBQUDBQUFBAQGBQUFBQUEBAUGBgQDBgUEBQUFBgQFBAQFBAYFBQQFBQQFBgUFBQQFBAUFBgYGBgUEBgUEBQUEBQUFBQUEBAQGBQUEBgQFBAUGBAUFBgMFBQUFBAQFBgUGBQUEBAUFBQQFBQUFBAYGBQUGBAYEBgUFBQQFBQUGBgYFBQQFBQQFBQcFBAQGBQYF"
+	.base64	"BgUGBQYEAwUEBgQGBAYFBgQFBAUEBQUFBgUFBQMGBgQEBAUGBQQGBQYFBgQFBgUEBQQFBQUEAwUEBQYFBgYFBgQFBAcFBQMFBQQEBAUGBgQEBQQGBQQFBAYFBQMEBgUFBQUFBQUEBAQEBQUFBAUGBQQFBAYFBQMFBAUEBQUGBgQGBQUEBQQFBAUGBQQFBAUGBQUEBQYEAwUGBQUFBQUFBQQGBgUEBQUFBAUFBQUGBgQEBQYFBgUFBAUFBgQGBQcEBAUGBgUFBQYEBQYFBQUFBgQFBQYGBQQFBAUFBQUGBgUEBQQEBQUFBQUFBAQEBQYEBAQGBAUFBQUDBQQFAwUF"
+	.base64	"BgUEBQQGBgQGBgUDBQYFBQQFBQUGBQYGBAUFBAYFBAUFBAQFBQYFBQYFBgUFBQUEBgYFBQUFBQQEBgUEBAUGBQMFBgUGBQYGBAYFBQUFBQQFBQUFBgUFBAUFBAYGBgUFBQUEBQQGBgUEBgUEBgYFBAQFBQYGBgUGBQQFBgUFAwYFAgYFBQUGBgUFBgYDBQUDBQUGBQUEBgUGBgUFBQUFBgYGBQQHBQQGBgUFBAUGBAUGBQUEBQUFBAUGBQUFBQUEBQUG"
+/* Hand-written RV32I leaves. a0=state, a1=remaining (rubik_asm_search_bound).
+ * Preserve every callee-saved register; no calls, multiply, divide, or CSR.
+ * state_t layout: seven permutation bytes followed by seven orientation bytes.
+ */
+    .text
+    .align 2
+    .globl rubik_asm_endgame_lookup
+    .type rubik_asm_endgame_lookup,@function
+rubik_asm_endgame_lookup:
+    /* Full-state 30-bit key: six 5-bit (permutation,orientation) pairs. */
+    lbu a3,0(a0)
+    lbu a4,7(a0)
+    slli a3,a3,2
+    or a3,a3,a4
+    .macro KEY_PAIR p,o
+    lbu a4,\p(a0)
+    lbu a5,\o(a0)
+    slli a3,a3,5
+    slli a4,a4,2
+    or a4,a4,a5
+    or a3,a3,a4
+    .endm
+    KEY_PAIR 1,8
+    KEY_PAIR 2,9
+    KEY_PAIR 3,10
+    KEY_PAIR 4,11
+    KEY_PAIR 5,12
+    .purgem KEY_PAIR
+
+    mv t0,a3
+    slli t1,t0,13
+    xor t0,t0,t1
+    srli t1,t0,17
+    xor t0,t0,t1
+    slli t1,t0,5
+    xor t0,t0,t1
+    srli t5,t0,14
+    ori t5,t5,1
+    slli t5,t5,2
+    slli t0,t0,18
+    srli t0,t0,16
+    la t1,rubik_asm_endgame_keys
+    li t2,-1
+.Lhash_probe:
+    add t3,t1,t0
+    lw t4,0(t3)
+    beq t4,a3,.Lhash_hit
+    beq t4,t2,.Lhash_miss
+    add t0,t0,t5
+    slli t0,t0,16
+    srli t0,t0,16
+    j .Lhash_probe
+.Lhash_hit:
+    srli a0,t0,2
+    ret
+.Lhash_miss:
+    li a0,-1
+    ret
+    .size rubik_asm_endgame_lookup,.-rubik_asm_endgame_lookup
+
+    /* Append one ternary digit to an index; constants expand at assembly. */
+    .macro TERNARY offset,base
+    lbu a3,\offset(\base)
+    slli a4,a2,1
+    add a2,a2,a4
+    add a2,a2,a3
+    .endm
+    .align 2
+    .globl rubik_asm_search_bound
+    .type rubik_asm_search_bound,@function
+rubik_asm_search_bound:
+    lbu t0,0(a0)
+    lbu t1,1(a0)
+    lbu t2,2(a0)
+    lbu t3,3(a0)
+    lbu t4,4(a0)
+    lbu t5,5(a0)
+    lbu t6,6(a0)
+    /* Lehmer digit 0 is p0. Digit 1 = p1 - count(earlier < p1).
+     * Digit 2 uses two earlier comparisons; later digits use the suffix.
+     * Nine comparisons total instead of nested loops with 21 comparisons.
+     */
+    slli a2,t0,1
+    add a2,a2,t0
+    slli a2,a2,1
+    sltu a3,t0,t1
+    sub a3,t1,a3
+    add a2,a2,a3
+    /* radix 5 and digit 2 */
+    slli a4,a2,2
+    add a2,a2,a4
+    sltu a3,t0,t2
+    sltu a4,t1,t2
+    add a3,a3,a4
+    sub a3,t2,a3
+    add a2,a2,a3
+    /* radix 4 and digit 3 */
+    slli a2,a2,2
+    sltu a3,t4,t3
+    sltu a4,t5,t3
+    add a3,a3,a4
+    sltu a4,t6,t3
+    add a3,a3,a4
+    add a2,a2,a3
+    /* radix 3 and digit 4 */
+    slli a4,a2,1
+    add a2,a2,a4
+    sltu a3,t5,t4
+    sltu a4,t6,t4
+    add a3,a3,a4
+    add a2,a2,a3
+    /* radix 2 and digit 5; final radix 1 adds zero */
+    slli a2,a2,1
+    sltu a3,t6,t5
+    add a2,a2,a3
+    la a7,rubik_asm_compact_perm_dist
+    add a3,a7,a2
+    lbu a6,0(a3)
+
+    lbu a2,7(a0)
+    TERNARY 8,a0
+    TERNARY 9,a0
+    TERNARY 10,a0
+    TERNARY 11,a0
+    TERNARY 12,a0
+    la a7,rubik_asm_compact_orient_dist
+    add a3,a7,a2
+    lbu a3,0(a3)
+    bge a6,a3,.Lasm_forward_max
+    mv a6,a3
+.Lasm_forward_max:
+    /* Forward-only ablation: a1=remaining is intentionally unused.
+     * The caller compares this admissible bound to the remaining budget. */
+    mv a0,a6
+    ret
+    .size rubik_asm_search_bound,.-rubik_asm_search_bound
+    .purgem TERNARY
+    .text
+
+
+
+.section .rodata.small_rolling,"a",@progbits
+.balign 2
+rubik_asm_rolling_times729:
+.hword 0,729,1458,2187,2916,3645,4374,5103,5832
+.text
+
+/* Custom leaf ABI: a0=src,a2=dst,a3=move0; preserve a1,t4,all s-regs. */
+.text
+.align 2
+.globl rubik_asm_fixed_move_core
+.type rubik_asm_fixed_move_core,@function
+rubik_asm_fixed_move_core:
+slli t0,a3,2
+la t1,fixed_move_targets
+add t0,t1,t0
+lw t0,0(t0)
+jr t0
+.Lfixed_move_0: /* R */
+lbu a4,1(a0)
+sb a4,0(a2)
+lbu a4,4(a0)
+sb a4,1(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,0(a0)
+sb a4,3(a2)
+lbu a4,3(a0)
+sb a4,4(a2)
+lbu a4,5(a0)
+sb a4,5(a2)
+lbu a4,6(a0)
+sb a4,6(a2)
+lbu a4,8(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_0_7
+addi a4,a4,3
+.Lfixed_ori_0_7:
+sb a4,7(a2)
+lbu a4,11(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_0_8
+addi a4,a4,3
+.Lfixed_ori_0_8:
+sb a4,8(a2)
+lbu a4,9(a0)
+sb a4,9(a2)
+lbu a4,7(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_0_10
+addi a4,a4,3
+.Lfixed_ori_0_10:
+sb a4,10(a2)
+lbu a4,10(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_0_11
+addi a4,a4,3
+.Lfixed_ori_0_11:
+sb a4,11(a2)
+lhu a4,12(a0)
+sh a4,12(a2)
+ret
+.Lfixed_move_1: /* R2 */
+lbu a4,4(a0)
+sb a4,0(a2)
+lbu a4,3(a0)
+sb a4,1(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,1(a0)
+sb a4,3(a2)
+lbu a4,0(a0)
+sb a4,4(a2)
+lbu a4,5(a0)
+sb a4,5(a2)
+lbu a4,6(a0)
+sb a4,6(a2)
+lbu a4,11(a0)
+sb a4,7(a2)
+lbu a4,10(a0)
+sb a4,8(a2)
+lbu a4,9(a0)
+sb a4,9(a2)
+lbu a4,8(a0)
+sb a4,10(a2)
+lbu a4,7(a0)
+sb a4,11(a2)
+lhu a4,12(a0)
+sh a4,12(a2)
+ret
+.Lfixed_move_2: /* R' */
+lbu a4,3(a0)
+sb a4,0(a2)
+lbu a4,0(a0)
+sb a4,1(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,4(a0)
+sb a4,3(a2)
+lbu a4,1(a0)
+sb a4,4(a2)
+lbu a4,5(a0)
+sb a4,5(a2)
+lbu a4,6(a0)
+sb a4,6(a2)
+lbu a4,10(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_2_7
+addi a4,a4,3
+.Lfixed_ori_2_7:
+sb a4,7(a2)
+lbu a4,7(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_2_8
+addi a4,a4,3
+.Lfixed_ori_2_8:
+sb a4,8(a2)
+lbu a4,9(a0)
+sb a4,9(a2)
+lbu a4,11(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_2_10
+addi a4,a4,3
+.Lfixed_ori_2_10:
+sb a4,10(a2)
+lbu a4,8(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_2_11
+addi a4,a4,3
+.Lfixed_ori_2_11:
+sb a4,11(a2)
+lhu a4,12(a0)
+sh a4,12(a2)
+ret
+.Lfixed_move_3: /* B */
+lhu a4,0(a0)
+sh a4,0(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,4(a0)
+sb a4,3(a2)
+lbu a4,5(a0)
+sb a4,4(a2)
+lbu a4,6(a0)
+sb a4,5(a2)
+lbu a4,3(a0)
+sb a4,6(a2)
+lbu a4,7(a0)
+sb a4,7(a2)
+lhu a4,8(a0)
+sh a4,8(a2)
+lbu a4,11(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_3_10
+addi a4,a4,3
+.Lfixed_ori_3_10:
+sb a4,10(a2)
+lbu a4,12(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_3_11
+addi a4,a4,3
+.Lfixed_ori_3_11:
+sb a4,11(a2)
+lbu a4,13(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_3_12
+addi a4,a4,3
+.Lfixed_ori_3_12:
+sb a4,12(a2)
+lbu a4,10(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_3_13
+addi a4,a4,3
+.Lfixed_ori_3_13:
+sb a4,13(a2)
+ret
+.Lfixed_move_4: /* B2 */
+lhu a4,0(a0)
+sh a4,0(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,5(a0)
+sb a4,3(a2)
+lbu a4,6(a0)
+sb a4,4(a2)
+lbu a4,3(a0)
+sb a4,5(a2)
+lbu a4,4(a0)
+sb a4,6(a2)
+lbu a4,7(a0)
+sb a4,7(a2)
+lhu a4,8(a0)
+sh a4,8(a2)
+lhu a4,12(a0)
+sh a4,10(a2)
+lhu a4,10(a0)
+sh a4,12(a2)
+ret
+.Lfixed_move_5: /* B' */
+lhu a4,0(a0)
+sh a4,0(a2)
+lbu a4,2(a0)
+sb a4,2(a2)
+lbu a4,6(a0)
+sb a4,3(a2)
+lbu a4,3(a0)
+sb a4,4(a2)
+lbu a4,4(a0)
+sb a4,5(a2)
+lbu a4,5(a0)
+sb a4,6(a2)
+lbu a4,7(a0)
+sb a4,7(a2)
+lhu a4,8(a0)
+sh a4,8(a2)
+lbu a4,13(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_5_10
+addi a4,a4,3
+.Lfixed_ori_5_10:
+sb a4,10(a2)
+lbu a4,10(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_5_11
+addi a4,a4,3
+.Lfixed_ori_5_11:
+sb a4,11(a2)
+lbu a4,11(a0)
+addi a4,a4,-2
+bge a4,zero,.Lfixed_ori_5_12
+addi a4,a4,3
+.Lfixed_ori_5_12:
+sb a4,12(a2)
+lbu a4,12(a0)
+addi a4,a4,-1
+bge a4,zero,.Lfixed_ori_5_13
+addi a4,a4,3
+.Lfixed_ori_5_13:
+sb a4,13(a2)
+ret
+.Lfixed_move_6: /* D */
+lbu a4,0(a0)
+sb a4,0(a2)
+lbu a4,2(a0)
+sb a4,1(a2)
+lbu a4,5(a0)
+sb a4,2(a2)
+lbu a4,3(a0)
+sb a4,3(a2)
+lbu a4,1(a0)
+sb a4,4(a2)
+lbu a4,4(a0)
+sb a4,5(a2)
+lhu a4,6(a0)
+sh a4,6(a2)
+lbu a4,9(a0)
+sb a4,8(a2)
+lbu a4,12(a0)
+sb a4,9(a2)
+lbu a4,10(a0)
+sb a4,10(a2)
+lbu a4,8(a0)
+sb a4,11(a2)
+lbu a4,11(a0)
+sb a4,12(a2)
+lbu a4,13(a0)
+sb a4,13(a2)
+ret
+.Lfixed_move_7: /* D2 */
+lbu a4,0(a0)
+sb a4,0(a2)
+lbu a4,5(a0)
+sb a4,1(a2)
+lbu a4,4(a0)
+sb a4,2(a2)
+lbu a4,3(a0)
+sb a4,3(a2)
+lbu a4,2(a0)
+sb a4,4(a2)
+lbu a4,1(a0)
+sb a4,5(a2)
+lhu a4,6(a0)
+sh a4,6(a2)
+lbu a4,12(a0)
+sb a4,8(a2)
+lbu a4,11(a0)
+sb a4,9(a2)
+lbu a4,10(a0)
+sb a4,10(a2)
+lbu a4,9(a0)
+sb a4,11(a2)
+lbu a4,8(a0)
+sb a4,12(a2)
+lbu a4,13(a0)
+sb a4,13(a2)
+ret
+.Lfixed_move_8: /* D' */
+lbu a4,0(a0)
+sb a4,0(a2)
+lbu a4,4(a0)
+sb a4,1(a2)
+lbu a4,1(a0)
+sb a4,2(a2)
+lbu a4,3(a0)
+sb a4,3(a2)
+lbu a4,5(a0)
+sb a4,4(a2)
+lbu a4,2(a0)
+sb a4,5(a2)
+lhu a4,6(a0)
+sh a4,6(a2)
+lbu a4,11(a0)
+sb a4,8(a2)
+lbu a4,8(a0)
+sb a4,9(a2)
+lbu a4,10(a0)
+sb a4,10(a2)
+lbu a4,12(a0)
+sb a4,11(a2)
+lbu a4,9(a0)
+sb a4,12(a2)
+lbu a4,13(a0)
+sb a4,13(a2)
+ret
+.size rubik_asm_fixed_move_core,.-rubik_asm_fixed_move_core
+.section .rodata.fixed_targets,"a",@progbits
+.balign 4
+fixed_move_targets:
+.word .Lfixed_move_0,.Lfixed_move_1,.Lfixed_move_2,.Lfixed_move_3,.Lfixed_move_4,.Lfixed_move_5,.Lfixed_move_6,.Lfixed_move_7,.Lfixed_move_8
+.text
+
+.text
+.align 2
+.globl rubik_asm_bloom6_maybe
+.type rubik_asm_bloom6_maybe,@function
+rubik_asm_bloom6_maybe:
+    /* Full-state 30-bit key: six 5-bit (permutation,orientation) pairs. */
+    lbu a3,0(a0)
+    lbu a4,7(a0)
+    slli a3,a3,2
+    or a3,a3,a4
+    .macro KEY_PAIR p,o
+    lbu a4,\p(a0)
+    lbu a5,\o(a0)
+    slli a3,a3,5
+    slli a4,a4,2
+    or a4,a4,a5
+    or a3,a3,a4
+    .endm
+    KEY_PAIR 1,8
+    KEY_PAIR 2,9
+    KEY_PAIR 3,10
+    KEY_PAIR 4,11
+    KEY_PAIR 5,12
+    .purgem KEY_PAIR
+
+    slli t0,a3,13
+    xor a3,a3,t0
+    srli t0,a3,17
+    xor a3,a3,t0
+    slli t0,a3,5
+    xor a3,a3,t0
+    srli t1,a3,16
+    ori t1,t1,1
+    la t2,rubik_asm_bloom6_bits
+    lui t6,2
+    slli t3,a3,16
+    srli t3,t3,19
+    add t3,t2,t3
+    lbu t3,0(t3)
+    andi t5,a3,7
+    srl t3,t3,t5
+    andi t3,t3,1
+    beq t3,zero,bloom6_reject
+    add a3,a3,t1
+    add t2,t2,t6
+    slli t3,a3,16
+    srli t3,t3,19
+    add t3,t2,t3
+    lbu t3,0(t3)
+    andi t5,a3,7
+    srl t3,t3,t5
+    andi t3,t3,1
+    beq t3,zero,bloom6_reject
+    add a3,a3,t1
+    add t2,t2,t6
+    slli t3,a3,16
+    srli t3,t3,19
+    add t3,t2,t3
+    lbu t3,0(t3)
+    andi t5,a3,7
+    srl t3,t3,t5
+    andi t3,t3,1
+    beq t3,zero,bloom6_reject
+bloom6_accept:
+    li a0,1
+    ret
+bloom6_reject:
+    li a0,0
+    ret
+    .size rubik_asm_bloom6_maybe,.-rubik_asm_bloom6_maybe
+
+.section .rodata.bloom6,"a",@progbits
+.balign 4
+rubik_asm_bloom6_bits:
+/* Embedded radius-six Bloom bits: identical to the verified 24 KiB table.
+ * Text constants make the submission self-contained in a clean checkout. */
+    .byte 102,185,246,131,255,203,158,231,170,177,244,146,255,47,239,86,63,154,190,123,186,75,223,32
+    .byte 172,189,111,63,237,233,255,232,174,187,156,226,90,125,180,167,54,159,150,23,166,18,52,201
+    .byte 249,199,60,54,240,123,253,106,252,91,72,86,138,236,61,221,65,151,31,125,250,239,199,178
+    .byte 67,220,234,103,42,42,227,127,189,132,217,83,159,50,223,94,44,191,47,249,245,141,238,27
+    .byte 115,85,55,113,255,191,123,122,175,211,152,219,63,183,190,220,215,220,95,203,217,183,251,79
+    .byte 246,241,118,247,206,155,135,159,222,171,95,59,118,245,53,191,146,79,83,187,93,172,111,249
+    .byte 59,207,219,79,203,45,101,229,186,180,237,247,125,27,234,135,89,253,158,247,121,172,242,215
+    .byte 251,255,191,171,119,115,244,102,221,251,78,186,89,127,231,159,63,36,199,185,219,193,78,194
+    .byte 170,203,213,175,97,90,213,122,206,108,239,198,166,254,103,40,57,170,232,239,208,30,27,247
+    .byte 222,152,249,253,239,244,69,222,97,247,46,166,249,121,254,246,54,91,41,169,127,95,182,247
+    .byte 154,254,164,246,173,244,202,81,239,126,187,104,102,79,252,197,230,179,125,220,118,175,249,98
+    .byte 73,175,150,191,58,133,217,174,49,250,117,236,86,119,27,168,247,63,20,40,255,206,242,186
+    .byte 93,158,82,227,247,27,218,88,101,158,119,9,107,58,4,100,251,167,57,222,108,184,255,73
+    .byte 245,39,111,158,202,215,249,152,253,10,117,117,238,92,155,165,251,191,127,213,251,214,183,234
+    .byte 176,248,151,211,253,39,78,187,151,133,65,185,200,188,189,120,143,215,103,118,172,157,166,126
+    .byte 254,118,253,7,203,126,237,227,125,255,149,119,250,139,86,254,235,232,181,105,158,240,59,143
+    .byte 247,254,118,105,185,107,244,186,109,126,134,26,61,48,103,110,251,199,188,4,151,101,254,71
+    .byte 255,10,250,104,125,241,222,251,183,111,182,215,247,239,246,117,201,203,219,31,219,213,79,25
+    .byte 250,118,6,209,249,220,100,69,146,78,150,119,247,248,124,222,131,245,131,255,113,172,189,141
+    .byte 115,109,14,175,11,205,255,127,242,62,254,254,175,101,158,10,78,136,181,232,131,216,209,3
+    .byte 47,120,63,95,244,220,94,209,202,209,231,246,173,151,154,231,168,244,134,208,95,201,226,130
+    .byte 99,247,211,127,213,223,221,234,213,119,116,106,235,150,255,143,243,82,255,251,191,235,123,174
+    .byte 179,253,207,234,38,240,253,60,135,253,230,70,255,233,225,142,175,183,213,73,77,119,147,167
+    .byte 182,27,78,68,242,159,72,242,250,89,189,241,147,175,254,198,60,150,5,100,223,191,28,153
+    .byte 201,231,15,221,91,207,253,249,117,219,116,227,185,24,57,61,171,234,223,190,27,223,111,187
+    .byte 122,173,209,58,245,234,239,235,114,73,249,147,188,130,40,183,78,126,205,31,226,95,87,130
+    .byte 207,38,91,254,186,254,216,52,22,236,39,215,45,253,163,72,142,214,237,9,207,65,15,53
+    .byte 218,149,189,29,155,87,61,120,206,209,222,159,251,145,213,219,191,31,80,236,251,53,249,125
+    .byte 156,222,183,155,198,93,23,86,247,227,169,77,251,203,214,103,199,110,119,255,240,181,64,243
+    .byte 251,247,177,239,149,116,154,223,219,163,183,78,52,25,3,241,159,47,127,83,31,226,17,121
+    .byte 119,206,223,11,190,114,134,193,191,253,255,222,77,234,197,254,156,91,170,180,33,238,233,111
+    .byte 250,139,254,119,209,134,105,95,99,207,149,45,234,107,219,60,107,159,227,125,85,125,255,125
+    .byte 252,252,253,191,174,155,255,108,185,118,124,67,111,90,223,172,63,244,254,115,139,188,254,132
+    .byte 253,94,86,87,158,248,98,206,90,79,103,231,191,217,226,255,47,98,161,222,24,199,73,37
+    .byte 149,243,167,216,42,207,121,251,13,224,218,112,108,10,161,90,203,243,252,203,207,246,21,188
+    .byte 19,216,79,213,229,223,82,160,127,198,255,245,214,73,127,93,105,220,255,213,172,115,212,187
+    .byte 231,127,63,251,254,175,33,163,60,53,157,159,152,220,176,28,241,213,143,201,194,46,254,127
+    .byte 249,184,13,83,141,90,146,117,118,124,89,131,165,253,205,198,255,255,155,31,253,123,241,215
+    .byte 238,205,89,196,168,207,126,247,174,10,216,138,148,127,254,103,59,238,242,223,141,175,123,87
+    .byte 250,230,61,92,57,235,111,78,11,58,195,126,159,113,205,115,253,63,186,123,177,167,178,255
+    .byte 55,203,166,239,153,110,95,145,243,194,246,47,195,191,215,63,91,61,252,123,95,161,35,186
+    .byte 56,6,204,46,23,239,217,244,248,113,151,39,17,127,87,250,173,155,119,211,4,51,123,117
+    .byte 11,247,243,148,237,219,237,95,15,231,235,120,250,252,127,62,221,255,187,193,63,188,19,83
+    .byte 255,211,63,203,209,63,189,170,231,61,117,30,61,183,190,210,125,91,150,213,123,174,222,219
+    .byte 211,238,41,218,234,186,215,218,247,116,156,91,202,250,121,120,243,115,80,165,159,12,185,229
+    .byte 127,221,207,112,254,159,123,8,77,100,185,255,206,110,127,182,95,162,221,191,26,249,201,205
+    .byte 206,203,245,175,166,94,40,206,205,205,203,182,108,236,139,190,135,11,19,121,132,71,191,66
+    .byte 113,67,82,117,241,143,221,232,95,13,180,149,59,243,183,155,111,214,245,255,113,98,95,106
+    .byte 45,183,184,214,185,30,238,61,91,236,206,76,84,228,242,29,213,111,118,182,229,251,217,114
+    .byte 161,255,186,75,219,111,89,100,156,133,255,130,175,114,126,242,91,140,243,231,86,177,159,126
+    .byte 155,151,162,42,239,143,85,115,115,109,63,170,16,225,171,199,142,253,27,6,167,205,218,149
+    .byte 155,19,198,175,217,209,207,254,250,49,203,100,53,245,163,49,201,223,239,96,39,127,255,157
+    .byte 80,206,47,30,183,183,219,3,140,253,235,155,73,87,180,244,79,48,117,190,119,218,251,35
+    .byte 31,179,254,239,119,54,77,119,238,172,179,237,99,30,180,167,92,236,179,8,168,183,143,85
+    .byte 135,197,231,61,127,47,151,158,126,221,14,103,219,154,128,106,147,252,137,191,74,231,63,190
+    .byte 62,191,141,194,255,214,116,175,51,123,60,237,182,253,74,58,231,173,183,222,15,198,239,183
+    .byte 189,93,55,19,191,111,183,97,239,203,27,193,146,1,37,250,249,108,137,55,121,14,2,247
+    .byte 253,180,47,84,68,155,240,248,190,135,198,82,177,182,50,235,233,239,247,255,20,161,191,218
+    .byte 97,191,143,133,137,152,193,132,189,182,77,78,64,174,86,109,181,239,62,115,221,238,255,181
+    .byte 247,249,159,255,244,191,250,69,206,110,218,174,203,215,190,216,113,247,126,186,127,115,208,17
+    .byte 159,31,222,84,231,215,4,155,251,179,251,126,243,63,183,6,225,211,219,10,226,141,213,249
+    .byte 127,75,207,159,22,250,213,33,143,167,58,86,187,215,251,142,148,231,254,87,255,194,173,95
+    .byte 151,23,213,118,147,118,202,112,147,92,94,59,212,203,95,254,234,216,77,155,33,81,255,25
+    .byte 142,191,190,181,216,247,14,81,122,247,111,156,149,61,152,109,251,24,107,45,184,253,117,87
+    .byte 255,113,253,251,250,154,195,93,102,254,253,69,116,28,250,158,89,220,245,83,253,147,233,221
+    .byte 14,227,234,101,157,171,124,212,186,242,218,189,163,141,178,234,215,213,112,194,230,126,162,57
+    .byte 239,117,105,47,122,135,15,127,159,73,203,246,237,178,213,162,91,221,230,173,209,181,214,155
+    .byte 139,239,241,229,79,99,181,203,94,205,192,215,244,48,254,236,206,213,175,237,114,60,17,121
+    .byte 121,135,191,63,242,48,110,207,251,239,191,14,253,242,159,254,73,127,169,126,216,217,195,127
+    .byte 55,27,179,98,57,47,227,126,191,182,24,223,215,223,254,78,220,247,254,126,248,239,109,85
+    .byte 240,143,111,196,31,197,235,126,15,222,57,223,120,34,126,201,254,23,240,209,155,123,241,235
+    .byte 79,199,120,146,213,79,95,63,115,112,251,128,253,60,72,231,72,199,168,96,141,94,111,223
+    .byte 154,199,193,94,57,222,116,61,199,196,218,30,39,87,254,221,227,181,168,108,238,154,65,191
+    .byte 203,70,146,87,134,223,247,199,231,240,214,159,197,240,23,135,207,168,117,104,167,204,93,237
+    .byte 245,48,110,186,103,243,243,111,19,175,77,26,215,127,190,224,50,253,95,240,213,205,164,59
+    .byte 182,247,93,20,185,182,136,65,185,5,126,227,182,219,22,227,142,188,39,39,170,244,218,87
+    .byte 165,252,207,6,156,99,212,231,196,109,113,239,118,63,212,136,101,61,71,63,214,135,87,95
+    .byte 85,150,100,157,254,154,68,199,248,222,251,71,206,227,181,190,175,237,83,117,16,125,102,9
+    .byte 251,239,187,251,79,253,183,218,214,126,23,83,152,212,178,139,62,143,174,170,187,239,70,170
+    .byte 109,190,189,254,85,216,236,171,211,203,167,231,223,212,194,59,146,119,248,37,158,106,178,158
+    .byte 104,239,219,91,125,43,240,44,176,182,169,223,253,250,163,50,227,251,56,171,85,79,111,205
+    .byte 231,56,223,111,211,252,201,251,186,237,187,201,151,153,195,76,255,89,75,159,201,189,70,183
+    .byte 255,23,169,124,10,103,247,255,196,216,245,71,204,188,63,80,248,153,254,223,151,70,45,161
+    .byte 151,142,227,73,73,93,188,85,54,84,97,157,102,75,101,253,93,159,45,121,60,47,79,157
+    .byte 1,255,254,238,223,79,50,185,249,255,186,163,206,43,87,241,62,242,103,52,253,183,123,249
+    .byte 145,215,222,121,220,80,237,158,155,73,100,75,207,44,206,184,55,235,157,30,191,157,95,174
+    .byte 28,238,88,233,238,43,23,2,78,21,121,252,238,30,183,63,237,83,13,31,230,55,111,124
+    .byte 101,142,187,23,249,204,236,127,231,61,237,107,253,249,51,126,117,203,111,195,255,251,249,144
+    .byte 190,119,255,90,245,243,119,142,93,155,29,122,231,150,185,107,229,143,93,195,240,210,62,233
+    .byte 223,247,81,238,95,204,95,184,115,85,249,87,195,71,59,83,247,94,29,247,189,232,163,150
+    .byte 130,89,244,247,171,187,242,60,254,80,231,104,217,190,72,43,255,243,115,123,118,63,123,43
+    .byte 148,198,223,196,223,119,29,187,90,35,119,170,188,134,213,191,255,47,186,183,108,36,239,151
+    .byte 238,121,115,1,40,123,191,119,166,109,95,221,118,147,213,89,31,163,247,93,101,110,243,206
+    .byte 205,91,159,59,139,47,182,127,179,145,189,234,241,41,97,39,166,174,144,191,111,143,9,147
+    .byte 227,94,211,108,175,191,207,125,248,43,161,109,117,235,240,231,143,123,243,127,233,247,100,107
+    .byte 187,247,219,125,86,247,175,225,240,125,87,235,203,60,253,117,205,251,207,15,232,164,250,97
+    .byte 213,223,61,250,249,22,135,185,106,119,53,103,250,29,59,11,205,63,60,94,55,218,246,110
+    .byte 237,223,228,175,60,89,98,227,77,158,195,77,65,46,42,17,228,227,255,160,102,172,46,234
+    .byte 95,80,191,142,85,189,22,234,63,110,206,189,178,154,168,247,127,206,254,181,235,92,237,241
+    .byte 75,163,94,214,205,183,233,122,221,107,249,93,117,187,6,59,205,157,215,152,239,170,254,39
+    .byte 59,245,207,251,138,189,250,247,189,255,27,29,91,115,203,229,107,155,76,197,126,87,247,23
+    .byte 217,241,232,127,246,239,51,209,33,77,119,54,43,119,157,215,250,93,149,98,231,63,253,58
+    .byte 239,103,246,138,95,255,119,245,254,8,221,174,78,214,116,167,221,51,171,224,232,123,235,116
+    .byte 153,189,6,37,20,10,186,232,63,27,59,63,63,255,55,110,18,111,196,97,215,185,227,123
+    .byte 179,170,79,202,127,189,44,255,134,139,38,61,118,175,81,237,187,157,126,177,212,252,93,201
+    .byte 62,30,250,127,109,251,221,149,158,223,110,155,117,74,176,241,148,85,140,159,127,255,58,155
+    .byte 251,187,171,115,211,249,249,191,11,247,77,216,164,111,179,193,95,229,31,175,178,153,110,127
+    .byte 210,146,92,2,90,47,191,123,180,124,27,249,90,201,229,72,182,181,85,37,154,218,0,250
+    .byte 217,31,113,63,76,215,251,147,196,121,47,210,146,248,191,66,127,227,243,185,93,210,26,210
+    .byte 57,135,123,17,168,58,191,54,124,194,60,69,25,251,191,213,55,247,151,226,92,61,255,238
+    .byte 213,157,241,219,76,187,245,185,115,233,223,86,190,35,55,204,157,115,207,58,107,255,255,155
+    .byte 118,120,93,155,223,53,190,129,199,181,108,229,99,62,170,124,174,193,105,51,240,221,219,228
+    .byte 240,240,216,174,243,23,29,152,56,70,93,162,51,253,117,188,188,91,212,207,205,253,171,95
+    .byte 239,188,77,248,240,21,199,187,143,222,114,253,53,115,13,69,94,249,94,182,46,165,131,149
+    .byte 200,243,222,95,126,92,232,245,180,63,98,220,70,249,211,78,254,186,185,91,212,239,207,114
+    .byte 91,34,117,194,222,154,61,231,225,238,59,38,210,198,243,185,255,163,178,205,38,233,162,23
+    .byte 67,42,53,250,215,194,115,108,186,157,52,186,119,63,7,125,243,250,255,19,241,252,15,254
+    .byte 171,229,76,138,209,251,238,87,42,252,213,174,255,121,111,58,47,80,85,255,230,184,163,235
+    .byte 238,214,222,162,145,126,251,130,195,5,127,97,86,238,94,191,199,150,253,226,190,214,187,178
+    .byte 212,109,37,119,124,174,245,214,5,62,38,121,171,129,247,101,231,232,3,252,65,191,171,43
+    .byte 171,178,71,245,243,71,119,142,223,206,133,221,207,231,89,211,217,127,53,8,220,250,79,191
+    .byte 210,191,204,159,127,112,186,143,31,104,23,187,91,178,67,169,252,221,111,166,146,29,30,126
+    .byte 135,155,149,231,231,122,75,139,91,255,232,55,211,222,159,175,175,147,255,136,78,84,77,166
+    .byte 190,223,214,170,38,120,215,166,207,213,255,190,231,244,191,61,91,29,63,255,229,251,75,249
+    .byte 236,157,63,59,222,77,200,29,49,123,186,166,191,43,247,149,213,178,182,249,97,184,237,25
+    .byte 142,119,182,111,57,199,210,157,210,125,55,213,183,52,157,38,122,158,213,90,71,45,179,207
+    .byte 24,62,93,14,117,243,138,96,101,251,223,174,90,216,143,251,234,255,127,165,15,215,133,210
+    .byte 59,58,230,214,63,16,79,6,156,253,86,10,247,139,215,251,145,210,213,206,127,121,10,141
+    .byte 201,99,239,93,250,243,171,183,223,48,95,71,189,159,63,8,134,121,187,83,59,38,59,228
+    .byte 181,110,183,133,93,223,79,47,78,203,127,253,233,201,90,127,254,224,149,68,226,138,25,139
+    .byte 162,234,101,239,118,29,249,195,222,151,239,252,117,232,29,138,221,197,142,17,253,94,16,183
+    .byte 111,86,111,215,219,100,47,207,173,99,114,118,30,253,243,91,221,228,68,6,159,178,13,254
+    .byte 22,94,81,164,123,190,251,129,223,219,125,61,220,154,235,140,125,183,254,153,127,238,221,198
+    .byte 99,180,105,95,121,148,207,10,243,170,113,7,89,7,249,104,110,24,146,156,18,77,123,223
+    .byte 25,121,251,213,111,207,236,77,239,74,240,211,87,189,224,213,186,125,31,254,24,208,113,237
+    .byte 191,95,26,190,32,92,145,62,191,234,213,97,106,117,205,35,184,134,90,225,207,93,92,61
+    .byte 30,204,1,23,179,117,235,223,236,181,134,115,76,231,239,75,166,223,182,111,208,190,235,13
+    .byte 232,58,201,76,215,44,185,66,175,215,191,4,81,229,193,59,23,123,58,200,119,80,111,24
+    .byte 98,187,241,80,78,43,21,218,143,209,237,236,166,251,199,170,217,251,103,77,247,127,233,102
+    .byte 31,236,254,53,175,46,123,31,204,253,123,214,246,227,246,238,213,126,42,29,57,106,118,191
+    .byte 213,117,24,53,202,7,253,251,8,29,191,40,119,67,78,182,220,226,229,125,238,2,218,138
+    .byte 255,87,123,252,22,29,93,183,107,58,25,213,157,243,60,52,39,188,121,187,184,191,173,253
+    .byte 251,134,235,255,250,94,243,223,63,89,199,221,164,50,233,119,23,62,203,243,114,192,31,82
+    .byte 53,235,91,47,92,251,53,187,195,117,251,209,226,199,202,62,238,216,127,204,174,217,163,27
+    .byte 207,123,111,221,240,71,185,21,41,45,187,252,123,252,175,212,181,14,238,59,182,53,78,254
+    .byte 240,234,41,97,25,230,110,254,218,161,237,45,245,236,229,34,111,198,93,187,158,95,13,114
+    .byte 16,87,254,145,119,111,249,101,179,66,243,9,189,158,229,253,255,115,250,229,243,84,104,214
+    .byte 233,63,138,103,51,197,139,44,99,125,190,97,243,249,151,198,186,230,110,173,236,121,247,196
+    .byte 199,25,55,117,221,239,228,37,59,1,57,32,223,254,140,141,161,150,159,108,151,226,212,72
+    .byte 93,186,90,46,23,208,52,43,109,123,218,48,219,242,78,78,5,78,91,94,159,111,186,203
+    .byte 245,94,255,81,68,147,61,207,195,109,223,119,77,6,103,15,90,117,123,233,34,250,123,77
+    .byte 211,93,210,71,123,28,187,223,179,27,227,219,255,95,242,174,78,197,111,246,246,228,38,175
+    .byte 211,143,99,109,107,138,92,100,109,91,83,47,108,123,92,184,118,127,39,115,146,75,226,106
+    .byte 235,208,134,203,242,135,220,232,122,99,191,217,170,183,43,126,119,215,83,244,175,254,255,173
+    .byte 114,246,86,254,151,184,60,169,150,223,63,113,241,249,123,185,91,90,244,157,171,204,113,86
+    .byte 49,123,47,113,244,97,114,109,175,63,170,222,189,199,57,207,90,247,239,149,157,215,235,72
+    .byte 217,22,215,188,245,47,222,15,166,42,239,237,255,95,199,246,238,170,255,255,241,185,55,155
+    .byte 188,27,58,250,239,116,222,219,249,61,246,104,93,174,249,14,159,64,159,232,56,77,168,251
+    .byte 251,115,190,173,239,60,3,93,189,223,31,68,185,255,190,20,255,187,51,154,214,55,45,149
+    .byte 159,191,253,15,239,164,174,66,199,254,53,127,100,200,231,251,220,107,159,173,53,227,248,117
+    .byte 73,125,121,103,214,249,201,222,153,107,187,171,135,232,106,154,127,235,173,93,234,233,237,51
+    .byte 131,127,215,71,26,196,190,231,247,119,85,235,22,246,238,254,198,165,23,213,101,157,76,90
+    .byte 156,21,91,81,238,116,24,78,114,113,79,233,15,123,111,239,224,54,158,205,223,189,228,251
+    .byte 104,103,223,231,93,86,63,164,61,187,19,25,62,32,170,190,76,124,140,110,235,114,202,238
+    .byte 93,251,28,92,243,62,254,204,27,167,191,252,247,95,102,195,185,143,111,77,223,178,79,199
+    .byte 115,159,70,190,179,214,205,207,10,185,146,159,85,215,167,132,126,91,156,213,199,21,141,148
+    .byte 1,249,178,169,102,55,248,23,156,178,190,126,249,44,227,96,249,198,62,47,93,50,79,160
+    .byte 221,19,65,92,250,52,65,46,186,127,121,206,87,213,116,239,133,113,220,230,30,122,255,223
+    .byte 5,103,239,63,237,178,219,228,182,177,210,62,174,149,248,4,255,179,188,221,21,118,126,59
+    .byte 103,211,138,231,175,220,199,207,110,95,143,53,245,167,205,146,238,170,27,250,95,105,44,85
+    .byte 159,143,191,113,63,52,247,111,197,167,125,102,86,200,47,62,138,90,135,242,187,109,121,153
+    .byte 203,255,159,40,218,125,226,210,225,38,158,61,223,251,115,174,177,195,241,191,179,251,85,98
+    .byte 155,91,95,188,75,169,205,102,29,21,197,126,160,231,201,125,49,173,250,255,249,253,252,187
+    .byte 255,231,127,225,216,3,104,58,23,134,96,46,182,94,109,175,121,254,203,95,211,140,95,127
+    .byte 187,23,127,148,204,222,106,103,180,188,198,38,95,221,250,215,108,215,24,2,219,109,1,230
+    .byte 143,255,216,206,163,252,202,199,146,242,178,207,72,243,120,253,103,238,253,249,225,250,60,251
+    .byte 190,125,223,233,47,151,87,89,108,245,237,63,191,20,248,167,76,235,158,95,122,95,164,101
+    .byte 252,189,140,129,126,219,211,186,112,195,191,239,58,247,32,233,182,107,202,9,206,211,155,129
+    .byte 119,111,94,144,173,26,41,124,163,255,174,142,224,254,253,209,218,199,115,119,75,196,215,122
+    .byte 171,127,55,123,215,235,239,63,220,232,157,253,115,68,178,242,201,71,255,250,153,209,122,230
+    .byte 186,223,95,57,183,176,173,147,250,236,173,188,254,252,119,135,187,25,55,219,40,62,152,147
+    .byte 121,209,127,210,214,71,106,62,211,85,70,191,187,63,141,211,179,215,88,10,254,93,206,255
+    .byte 183,183,87,190,156,255,186,173,125,184,77,178,60,127,250,193,29,214,175,245,151,118,210,188
+    .byte 88,66,80,86,58,59,163,172,211,251,253,214,58,246,160,116,223,190,191,92,139,119,195,73
+    .byte 205,252,254,188,39,117,60,62,193,54,85,35,47,198,39,183,187,201,222,25,243,108,227,174
+    .byte 158,147,94,90,96,99,122,142,110,119,151,22,30,170,214,237,25,254,254,154,43,172,102,42
+    .byte 239,228,198,79,216,139,244,63,245,155,70,199,237,123,123,255,153,101,21,222,97,127,187,106
+    .byte 175,109,71,238,223,222,246,140,126,91,125,155,166,233,46,78,255,242,254,231,183,109,84,170
+    .byte 175,231,2,120,235,151,19,91,143,63,12,83,191,138,108,89,175,71,248,65,175,170,127,182
+    .byte 87,219,96,229,242,179,46,186,239,255,255,137,186,158,247,140,233,0,115,231,91,94,251,14
+    .byte 214,139,23,156,175,249,155,44,207,87,151,142,251,229,128,187,89,62,139,118,255,251,158,0
+    .byte 191,246,195,127,236,223,227,214,110,83,158,77,214,247,159,61,60,158,187,41,167,230,99,127
+    .byte 234,247,159,166,71,93,239,198,247,125,110,250,186,225,239,121,238,185,219,83,127,254,165,223
+    .byte 21,157,79,82,201,77,67,219,233,105,217,199,135,147,200,119,228,55,74,123,183,179,8,254
+    .byte 249,79,224,179,220,211,19,247,213,38,26,254,157,135,101,95,159,98,165,247,187,237,95,241
+    .byte 254,151,79,208,188,255,59,150,63,210,98,210,104,239,233,230,123,203,20,225,207,235,112,217
+    .byte 108,238,210,106,252,53,215,255,21,140,84,247,85,168,229,226,62,47,60,231,246,255,164,231
+    .byte 219,99,53,207,214,189,131,63,71,253,51,83,130,119,238,239,163,241,121,47,159,255,205,237
+    .byte 245,163,238,127,254,182,186,207,251,123,154,195,109,209,117,223,29,131,95,153,235,151,190,213
+    .byte 223,115,108,222,149,156,15,79,103,206,60,155,43,250,162,253,246,51,157,103,249,42,238,18
+    .byte 107,93,234,105,123,205,243,179,249,103,228,186,213,121,185,179,158,250,249,226,149,86,127,206
+    .byte 143,13,190,78,250,238,249,243,152,123,216,141,193,237,110,123,81,28,111,181,219,207,235,241
+    .byte 124,246,255,223,142,57,94,178,205,23,115,237,68,39,235,110,220,240,251,42,163,255,170,13
+    .byte 23,55,231,55,191,125,253,243,107,61,215,51,95,19,253,175,123,255,121,149,175,118,41,217
+    .byte 215,103,122,254,120,187,237,48,186,66,255,188,219,253,190,221,55,216,8,227,94,23,222,111
+    .byte 222,124,35,133,207,46,197,252,255,122,54,170,247,205,245,127,78,229,162,94,244,215,7,105
+    .byte 244,251,251,138,5,245,121,157,135,127,251,94,92,155,255,107,46,221,190,190,46,173,231,87
+    .byte 120,119,140,126,255,126,251,245,30,215,206,44,91,115,210,159,176,78,207,58,180,244,253,95
+    .byte 95,244,55,132,254,234,213,137,79,189,221,121,207,159,171,178,111,237,216,2,142,251,93,115
+    .byte 93,30,125,177,182,217,86,30,125,175,95,117,50,74,176,189,183,50,243,99,250,191,95,88
+    .byte 53,231,0,116,251,31,186,134,55,182,245,114,244,185,87,133,127,220,188,199,57,199,62,75
+    .byte 222,112,247,139,190,54,159,179,169,219,125,4,179,123,170,99,228,201,241,141,145,237,47,31
+    .byte 87,158,47,221,60,126,111,194,155,98,231,219,17,217,247,160,199,186,45,85,9,116,142,187
+    .byte 70,19,113,141,15,83,168,23,247,59,41,72,142,221,155,93,153,73,69,101,93,188,217,92
+    .byte 107,100,214,242,109,60,177,29,254,203,148,207,211,221,181,121,145,231,253,187,122,237,127,252
+    .byte 55,111,226,171,89,41,165,58,190,187,187,102,159,157,175,66,50,246,71,184,81,229,255,203
+    .byte 254,0,127,249,77,211,239,236,157,62,190,218,61,231,226,189,87,121,224,165,76,105,223,114
+    .byte 181,119,142,191,48,69,255,98,203,13,92,127,39,239,179,8,151,243,183,186,191,30,230,205
+    .byte 53,254,145,83,247,208,25,27,212,158,100,201,53,72,199,233,119,126,87,167,114,163,149,55
+    .byte 233,114,95,87,237,143,206,139,199,175,235,97,223,186,180,120,238,175,232,253,127,221,94,69
+    .byte 246,31,156,31,55,247,183,211,101,245,105,189,251,247,253,139,238,39,178,127,183,233,254,238
+    .byte 4,206,111,23,26,90,110,235,117,77,203,39,254,127,127,182,10,216,71,91,184,116,124,230
+    .byte 218,219,230,127,252,197,190,138,221,220,142,238,58,247,191,231,89,88,189,93,222,178,171,171
+    .byte 175,211,6,62,159,221,93,81,237,163,250,120,254,143,159,57,88,90,98,183,223,222,143,130
+    .byte 221,95,203,154,68,150,78,141,27,249,230,31,235,102,89,123,135,151,14,150,17,211,157,47
+    .byte 176,238,206,4,159,91,126,119,239,125,70,190,33,223,155,151,79,125,90,200,15,151,236,206
+    .byte 174,62,205,100,116,191,210,22,140,221,150,177,166,221,246,31,218,159,190,207,175,189,207,207
+    .byte 180,145,191,59,73,44,228,80,251,202,186,30,127,223,159,55,236,28,234,244,23,91,243,69
+    .byte 216,251,223,146,191,109,195,167,83,62,237,254,174,76,150,17,191,223,242,162,70,107,71,242
+    .byte 148,212,21,55,243,216,37,253,87,155,127,23,223,247,159,93,214,103,190,225,117,62,222,213
+    .byte 228,186,119,42,207,51,240,92,255,189,253,214,27,47,239,53,107,5,218,31,149,195,86,118
+    .byte 123,239,113,200,223,169,253,172,114,247,14,104,189,87,62,82,127,179,184,171,162,69,222,145
+    .byte 233,125,159,26,198,213,172,154,169,127,126,167,52,229,55,87,115,213,4,47,102,100,243,125
+    .byte 245,220,223,201,63,221,219,254,119,173,223,147,255,170,217,153,179,207,204,235,249,254,252,188
+    .byte 223,184,159,73,252,246,85,171,252,158,177,17,223,190,175,96,244,119,95,250,75,218,157,114
+    .byte 127,171,166,80,95,254,123,76,155,166,104,159,189,37,234,35,225,223,203,192,124,217,190,221
+    .byte 12,113,103,54,173,167,95,152,32,107,239,204,51,206,119,54,122,223,57,194,242,96,194,237
+    .byte 237,172,233,174,173,217,127,43,215,251,55,103,69,102,248,59,220,61,107,149,170,85,205,250
+    .byte 104,254,247,54,246,255,96,117,218,182,158,74,185,39,239,156,189,167,125,85,246,190,197,248
+    .byte 249,13,71,86,62,177,87,251,235,38,157,119,110,239,190,252,239,45,237,142,90,157,247,120
+    .byte 167,107,173,247,171,30,148,246,123,240,39,216,94,170,251,250,115,125,108,102,87,251,127,95
+    .byte 30,93,79,27,149,126,58,255,101,157,65,138,254,131,215,105,201,197,222,152,105,201,124,30
+    .byte 225,224,71,175,190,99,207,26,229,44,126,159,255,60,213,206,181,233,99,229,47,79,187,107
+    .byte 175,157,254,210,135,201,188,175,245,28,45,113,186,135,143,147,229,37,251,165,191,128,215,208
+    .byte 217,238,191,94,59,159,131,47,196,172,127,93,223,124,62,236,135,90,176,125,83,112,223,170
+    .byte 169,222,117,55,149,63,202,120,182,236,213,105,51,222,238,186,53,173,223,247,143,111,43,246
+    .byte 204,240,223,27,126,89,249,94,127,118,233,242,79,54,156,221,224,88,155,19,201,215,175,165
+    .byte 203,187,224,87,167,255,5,19,111,111,206,78,127,243,236,226,211,141,91,183,234,41,37,202
+    .byte 141,180,187,190,254,251,213,217,252,213,171,116,177,150,190,118,85,221,228,194,251,156,91,83
+    .byte 140,157,160,234,118,211,206,127,127,242,117,125,103,252,191,106,251,246,115,98,95,252,113,63
+    .byte 83,218,63,8,117,189,230,79,117,76,254,69,125,50,249,248,112,96,247,24,119,180,46,61
+    .byte 248,23,99,119,255,243,215,151,117,212,10,229,87,115,238,218,41,181,234,28,122,27,232,238
+    .byte 127,114,213,74,126,185,57,99,45,212,249,241,31,247,203,79,239,115,90,180,155,153,179,250
+    .byte 59,20,9,198,123,127,219,235,234,64,91,62,222,125,119,95,112,87,118,149,228,93,123,95
+    .byte 89,105,176,106,37,24,51,121,236,196,107,123,212,43,26,205,94,207,247,86,218,233,213,77
+    .byte 95,111,243,235,94,110,127,146,149,149,11,11,193,142,233,91,175,127,191,185,235,154,247,206
+    .byte 47,55,83,111,234,23,211,169,252,148,221,231,239,236,85,170,150,125,183,188,171,125,255,247
+    .byte 211,122,28,130,223,44,227,182,207,255,170,121,126,203,174,241,20,218,202,151,166,230,251,220
+    .byte 71,226,187,91,209,198,111,117,155,237,191,119,179,220,104,201,179,128,143,250,47,177,152,110
+    .byte 63,250,126,195,247,239,253,105,179,185,203,233,226,247,79,107,223,218,255,137,254,41,95,9
+    .byte 39,178,51,119,27,75,255,217,187,30,254,113,207,85,221,44,26,255,120,110,118,30,194,223
+    .byte 155,213,50,8,250,125,179,26,154,55,87,182,254,222,238,42,218,72,254,118,59,156,63,138
+    .byte 242,94,90,255,251,175,54,152,118,211,149,167,243,206,251,106,221,163,55,211,230,105,130,155
+    .byte 21,191,189,45,103,146,181,114,29,74,255,242,63,250,54,48,239,117,187,157,73,31,89,247
+    .byte 155,122,93,88,223,187,160,39,38,234,124,88,239,27,211,67,189,79,21,206,101,247,253,101
+    .byte 194,160,241,248,115,202,62,110,48,230,201,93,39,223,243,84,83,236,141,92,157,251,191,94
+    .byte 194,81,246,89,163,215,37,215,251,223,220,89,172,63,130,187,151,118,203,176,170,119,125,174
+    .byte 186,252,238,125,126,244,208,191,119,30,85,251,182,191,59,183,171,134,95,242,69,220,62,89
+    .byte 247,223,254,111,247,190,155,246,120,250,227,130,151,215,219,93,239,75,237,212,252,121,61,212
+    .byte 120,187,104,31,191,125,107,150,174,175,31,58,223,58,115,254,40,118,95,4,217,75,55,123
+    .byte 38,68,149,90,243,235,119,196,190,226,28,236,190,230,52,255,35,109,139,150,98,231,46,228
+    .byte 238,154,180,223,231,199,33,251,201,246,175,186,41,103,77,219,212,123,204,131,234,183,85,233
+    .byte 241,62,220,180,239,243,208,234,184,119,208,136,109,183,234,222,180,191,201,185,239,227,211,122
+    .byte 190,103,112,184,91,188,182,15,87,207,174,204,118,159,231,105,78,239,231,166,79,206,100,251
+    .byte 116,236,183,43,120,170,243,230,147,235,80,93,207,174,179,71,255,69,245,33,151,174,61,212
+    .byte 82,127,233,255,86,234,159,175,87,168,175,242,1,252,191,130,125,225,148,72,127,254,157,60
+    .byte 223,85,84,38,110,115,93,239,187,239,216,9,190,174,234,239,87,179,51,209,250,27,74,28
+    .byte 103,248,170,135,245,150,182,185,44,88,191,182,106,77,83,184,81,253,249,173,249,197,47,138
+    .byte 87,254,54,171,191,131,95,34,122,235,141,230,43,106,22,117,151,35,50,118,181,11,83,113
+    .byte 215,184,255,20,111,234,231,29,235,59,182,205,127,13,178,106,105,159,191,126,230,198,207,72
+    .byte 243,125,239,57,120,114,242,170,91,209,254,220,239,109,70,207,124,47,39,103,89,124,247,141
+    .byte 212,233,95,8,211,182,77,223,126,122,238,207,110,254,174,195,175,142,153,86,223,247,6,220
+    .byte 121,126,94,125,89,55,128,181,35,117,137,250,94,23,203,39,159,237,66,246,243,215,88,157
+    .byte 95,53,221,99,231,247,125,214,23,86,120,155,34,153,87,30,134,150,149,232,58,230,27,247
+    .byte 221,69,15,81,161,245,169,231,147,221,188,222,117,119,172,156,88,198,61,22,178,90,246,99
+    .byte 95,91,61,208,206,90,222,235,239,214,81,183,242,95,116,1,254,61,255,63,182,29,239,221
+    .byte 104,111,250,230,217,78,253,63,221,233,205,214,79,242,126,184,184,243,93,95,158,247,180,182
+    .byte 123,119,71,227,183,163,15,196,25,111,209,93,15,219,115,235,189,241,136,27,172,158,153,88
+    .byte 161,123,110,120,246,119,115,126,132,224,118,223,121,207,123,146,123,158,221,123,250,91,79,216
+    .byte 254,121,149,251,211,215,117,252,196,230,179,111,229,230,124,217,201,194,195,182,93,230,237,99
+    .byte 111,213,145,85,126,186,5,242,30,41,81,23,57,164,171,99,182,150,207,239,109,231,243,30
+    .byte 90,206,188,231,36,201,74,236,143,159,51,25,241,34,177,103,213,51,123,130,19,116,198,143
+    .byte 211,175,170,235,120,178,126,201,156,246,57,6,51,227,182,143,163,92,145,143,127,79,47,151
+    .byte 255,247,22,93,225,158,213,122,190,117,123,73,255,70,233,41,32,15,195,179,23,167,199,108
+    .byte 151,223,61,238,251,42,218,42,70,111,121,175,246,223,234,182,51,222,223,25,135,253,161,24
+    .byte 221,142,235,61,196,240,56,251,109,255,254,243,173,126,191,47,200,170,19,197,143,63,91,244
+    .byte 106,215,125,225,231,233,183,100,219,111,158,214,109,91,239,190,238,55,249,139,61,11,210,69
+    .byte 255,46,58,139,196,186,221,230,123,84,60,197,114,241,111,148,181,72,186,191,30,235,242,206
+    .byte 11,73,221,253,232,175,211,189,232,154,147,61,154,119,54,137,157,110,171,198,121,183,62,191
+    .byte 94,199,139,74,207,219,250,191,237,153,123,143,157,89,52,115,159,191,255,145,29,78,239,244
+    .byte 166,158,246,211,253,31,169,135,157,30,245,111,125,110,150,29,137,89,49,55,223,214,221,35
+    .byte 183,231,83,127,223,213,142,174,255,127,238,255,87,107,33,191,200,103,157,86,200,108,91,152
+    .byte 144,172,32,219,107,53,143,237,115,12,137,200,127,85,242,50,185,219,187,182,109,171,163,165
+    .byte 247,253,159,75,125,43,189,84,198,251,201,240,104,74,60,169,81,232,243,66,222,122,125,181
+    .byte 255,219,62,17,215,102,109,247,177,126,42,93,100,55,190,160,69,109,131,118,198,60,95,219
+    .byte 215,61,46,54,159,209,93,251,107,84,167,77,143,47,21,238,226,118,23,123,5,246,24,62
+    .byte 203,157,204,180,246,90,18,250,245,183,103,214,73,145,119,41,254,39,18,223,187,109,211,255
+    .byte 147,177,87,207,39,112,70,222,249,117,203,249,155,75,143,210,254,119,246,199,103,182,190,150
+    .byte 60,61,214,158,219,31,178,162,83,150,0,254,79,202,163,251,162,13,81,39,171,191,77,222
+    .byte 169,253,237,167,155,80,216,15,114,250,12,91,176,140,255,169,129,218,151,199,253,188,111,119
+    .byte 211,253,206,190,238,88,94,127,239,159,187,158,253,214,127,191,167,222,107,55,166,31,197,100
+    .byte 41,88,223,157,228,93,146,58,148,224,207,95,248,78,254,182,232,177,132,181,202,245,84,121
+    .byte 179,255,169,223,207,239,143,226,141,48,252,100,49,22,142,61,179,119,171,27,83,95,26,199
+    .byte 221,28,203,196,59,113,212,210,252,254,119,65,242,240,167,83,78,115,222,12,72,111,221,188
+    .byte 172,191,22,152,84,215,252,38,191,239,19,253,179,175,26,40,61,35,147,36,239,155,127,71
+    .byte 23,196,190,48,223,255,246,93,89,211,161,123,61,182,171,213,213,223,250,145,119,126,11,89
+    .byte 63,232,23,187,122,114,255,191,218,189,92,113,63,235,21,248,239,246,238,188,240,125,95,130
+    .byte 171,221,245,187,166,119,191,43,75,181,87,229,198,144,107,77,239,47,247,218,243,250,179,136
+    .byte 157,82,203,211,197,233,248,89,233,112,137,143,244,237,114,237,213,151,253,243,113,120,94,60
+    .byte 11,204,152,205,93,185,79,126,117,111,177,66,82,159,111,47,183,127,31,175,215,246,88,46
+    .byte 81,249,137,28,103,114,249,221,125,165,206,255,244,206,169,95,218,127,232,210,98,156,166,118
+    .byte 85,255,155,91,255,61,167,72,244,157,219,35,207,255,97,79,231,55,103,253,136,158,87,238
+    .byte 95,108,15,184,251,155,119,30,168,119,239,172,190,157,218,207,194,247,123,221,37,7,223,174
+    .byte 19,30,213,158,42,55,100,62,157,253,151,140,45,214,79,95,190,102,110,233,210,90,93,184
+    .byte 230,127,247,229,189,190,204,74,53,42,106,255,254,111,204,14,174,195,219,26,86,254,101,220
+    .byte 115,253,191,26,231,101,124,224,191,247,239,125,7,204,79,22,53,190,238,61,139,198,162,83
+    .byte 26,237,187,148,251,175,176,175,221,249,33,223,11,159,223,60,84,255,115,209,115,142,191,107
+    .byte 238,55,127,219,153,101,191,59,119,223,219,245,2,118,79,170,189,72,120,151,222,154,48,148
+    .byte 227,166,95,97,99,119,148,236,53,87,232,248,184,85,164,176,55,59,207,27,158,191,212,106
+    .byte 47,113,147,29,179,210,102,142,71,221,111,69,255,217,102,118,109,173,125,223,137,109,126,239
+    .byte 246,243,119,87,101,235,206,51,111,174,237,93,121,250,44,23,215,176,122,61,205,119,253,118
+    .byte 156,122,195,51,138,38,252,123,75,252,118,191,115,57,110,59,117,233,14,231,84,159,205,116
+    .byte 235,109,95,251,152,237,180,149,66,84,135,131,193,205,15,187,219,127,95,10,81,61,238,236
+    .byte 231,254,253,211,235,230,155,138,93,16,64,245,23,109,95,87,155,126,234,91,255,119,83,87
+    .byte 251,46,81,187,149,222,159,208,89,247,74,151,119,247,107,237,55,219,62,231,54,251,79,136
+    .byte 105,185,126,253,241,66,105,121,195,125,27,211,99,76,27,143,211,187,159,67,189,235,152,144
+    .byte 13,224,253,95,223,236,35,59,201,203,243,61,150,214,178,95,77,41,164,245,150,127,27,248
+    .byte 213,226,250,213,116,91,38,89,19,215,234,233,183,127,59,172,243,178,31,187,139,10,118,219
+    .byte 255,159,85,157,158,252,242,191,195,75,127,178,210,11,88,190,188,133,108,29,247,20,7,150
+    .byte 65,143,188,117,108,183,23,133,46,80,133,252,221,58,84,180,239,230,119,5,117,16,251,155
+    .byte 82,80,215,81,100,218,223,42,119,187,142,247,127,222,250,151,226,57,231,78,95,187,142,11
+    .byte 115,143,57,78,163,110,92,125,110,177,220,141,169,63,207,167,134,169,158,136,253,138,89,55
+    .byte 239,207,59,140,114,231,71,151,122,118,133,226,255,86,166,28,245,157,162,189,167,185,90,153
+    .byte 205,254,254,246,142,89,204,244,192,214,237,197,78,43,103,162,105,110,165,246,139,232,59,57
+    .byte 231,215,95,109,251,33,54,54,252,233,207,147,232,224,162,164,175,155,246,31,201,97,252,125
+    .byte 238,92,207,252,26,117,234,119,196,239,155,55,136,190,173,204,253,210,87,124,159,161,183,229
+    .byte 191,209,158,207,12,250,252,175,188,199,191,255,217,247,117,240,186,253,247,66,111,202,215,49
+    .byte 235,157,166,191,252,252,238,243,167,248,238,34,218,90,181,53,197,94,216,160,175,255,118,166
+    .byte 186,254,127,248,123,95,183,198,126,222,125,162,205,196,153,118,102,61,182,124,247,182,55,214
+    .byte 115,69,252,82,189,223,124,78,208,229,13,143,251,231,135,190,171,103,251,157,151,183,49,60
+    .byte 173,249,89,119,73,92,30,162,153,191,72,155,123,225,83,118,244,63,209,57,218,239,47,250
+    .byte 191,125,108,105,138,107,50,245,162,216,155,212,218,50,182,223,175,159,205,237,255,166,219,217
+    .byte 254,120,139,143,14,11,202,183,174,29,223,93,222,67,77,126,159,193,183,127,155,140,237,131
+    .byte 86,31,21,230,234,238,247,253,231,63,159,239,120,97,213,199,137,72,42,91,182,156,239,93
+    .byte 215,229,210,187,33,36,159,147,253,100,239,226,55,207,95,223,240,131,182,59,119,247,84,255
+    .byte 255,214,42,150,231,70,89,106,162,79,26,180,127,247,252,102,179,39,147,247,53,202,99,116
+    .byte 210,178,107,93,215,188,117,232,140,118,194,32,73,206,103,162,246,72,181,110,2,100,119,119
+    .byte 246,207,55,234,245,250,36,126,14,215,62,158,182,247,127,199,155,173,34,114,55,5,230,150
+    .byte 125,116,251,108,127,46,213,234,47,255,246,213,186,55,207,85,243,146,182,16,116,246,115,149
+    .byte 255,182,40,219,85,50,178,123,5,78,222,214,1,79,207,53,99,23,231,188,125,59,159,106
+    .byte 244,192,127,228,164,255,174,223,255,223,68,59,42,239,244,104,51,228,81,173,137,191,174,207
+    .byte 231,17,147,13,182,207,252,190,55,216,222,185,172,113,148,246,253,127,215,186,10,106,124,22
+    .byte 203,191,179,93,206,73,252,61,251,219,118,62,115,227,187,180,113,81,236,125,228,47,235,217
+    .byte 104,179,52,39,206,123,190,118,180,119,153,163,249,19,205,215,32,153,132,231,228,107,203,119
+    .byte 252,179,157,190,189,224,160,99,125,223,235,183,254,87,177,77,221,187,235,63,229,62,245,248
+    .byte 156,225,151,57,108,222,102,70,59,179,179,81,211,110,126,190,243,83,37,114,38,190,119,129
+    .byte 164,171,55,188,203,102,239,124,227,209,255,105,205,113,102,223,252,71,177,37,249,88,239,95
+    .byte 173,30,225,12,153,167,179,255,194,107,220,178,238,3,239,207,10,242,203,174,188,222,173,185
+    .byte 85,36,191,150,206,153,236,133,254,75,90,186,215,78,186,197,126,249,230,170,234,89,191,185
+    .byte 54,91,141,204,216,33,223,243,47,167,213,73,53,223,149,222,235,172,68,226,189,95,145,251
+    .byte 229,252,238,15,79,194,93,254,164,158,203,231,135,121,250,54,211,24,108,118,33,121,77,251
+    .byte 183,220,235,127,70,65,206,163,215,109,245,59,170,95,33,123,113,222,222,124,216,208,23,120
+    .byte 223,205,18,255,39,249,177,3,105,170,179,79,142,189,251,119,29,255,217,143,253,251,158,70
+    .byte 124,48,159,231,125,138,109,179,91,146,230,14,107,235,235,95,209,252,189,207,187,247,114,117
+    .byte 43,109,167,39,235,60,39,235,239,26,28,254,250,253,164,249,240,255,255,127,247,254,27,235
+    .byte 255,138,115,210,3,150,90,237,168,222,223,61,239,162,186,164,25,85,251,179,58,31,18,223
+    .byte 213,15,216,107,97,253,137,215,191,21,119,77,69,190,190,234,220,210,243,151,179,215,205,223
+    .byte 186,106,47,80,64,187,243,188,77,234,102,239,160,92,199,93,191,27,93,251,150,181,107,125
+    .byte 52,178,51,142,121,218,238,253,163,186,18,52,175,203,224,63,121,147,165,158,110,231,43,35
+    .byte 248,152,93,74,171,141,189,79,236,166,63,151,159,141,83,240,54,94,222,175,190,225,245,19
+    .byte 155,89,250,114,207,81,171,114,15,54,25,245,117,255,234,214,246,255,21,196,110,222,227,172
+    .byte 197,111,203,113,163,189,182,135,171,25,106,217,137,100,254,92,123,205,189,255,253,230,121,191
+    .byte 229,101,238,254,105,49,152,200,219,111,225,51,223,9,181,237,254,126,220,186,183,57,231,250
+    .byte 233,130,255,159,188,191,13,83,107,216,78,193,207,249,29,229,157,216,213,120,58,111,47,110
+    .byte 189,52,56,94,191,190,98,123,110,115,159,167,199,100,243,85,44,159,159,143,223,140,248,231
+    .byte 99,229,253,102,223,239,36,69,231,203,217,190,2,243,218,159,93,133,18,173,190,23,155,109
+    .byte 171,193,154,63,127,209,79,243,63,207,55,243,233,95,192,231,173,189,237,191,242,153,239,181
+    .byte 30,125,246,162,88,247,190,61,178,169,185,179,239,152,207,18,178,245,102,163,173,231,244,248
+    .byte 182,119,167,33,207,121,178,145,31,57,243,240,192,223,111,60,22,113,103,253,218,172,87,248
+    .byte 218,125,91,207,229,175,197,252,102,90,190,156,27,124,229,111,232,165,236,159,121,227,239,166
+    .byte 119,233,191,13,71,247,123,221,52,231,57,203,231,123,126,189,125,242,44,255,10,252,50,209
+    .byte 191,242,222,81,239,157,139,26,71,81,215,189,55,125,238,210,220,63,238,235,247,160,213,210
+    .byte 36,215,179,212,235,158,225,95,93,38,174,191,114,237,82,81,17,62,255,58,207,93,191,187
+    .byte 135,175,239,246,139,244,22,220,190,175,199,92,62,50,127,252,182,185,175,180,231,122,165,189
+    .byte 57,83,251,202,119,119,223,255,61,18,35,63,154,39,251,232,8,195,47,219,195,124,196,197
+    .byte 35,175,101,180,59,182,147,158,47,213,39,190,141,220,254,63,121,113,44,156,174,74,89,228
+    .byte 75,123,102,163,191,223,241,185,223,254,107,217,205,177,113,121,251,219,169,168,125,103,216,251
+    .byte 126,11,181,210,95,59,95,111,174,119,8,202,205,245,3,250,140,140,83,187,85,231,252,243
+    .byte 154,33,86,117,41,111,237,245,123,240,247,183,228,108,66,148,56,74,219,27,173,239,169,243
+    .byte 185,166,37,109,36,35,253,175,250,131,137,224,182,230,94,173,183,251,246,207,55,19,214,231
+    .byte 90,223,157,136,253,135,159,191,251,123,54,242,254,213,7,189,238,87,111,178,43,163,218,174
+    .byte 110,169,253,248,112,234,50,92,124,36,223,79,27,230,47,143,159,197,179,255,60,45,47,250
+    .byte 170,85,167,232,114,167,223,158,203,254,109,255,246,210,147,36,144,155,231,207,63,75,118,220
+    .byte 212,229,207,195,74,140,226,209,230,244,247,254,15,101,247,70,63,186,253,35,60,179,91,222
+    .byte 116,60,239,90,144,151,139,218,148,101,36,252,60,159,68,205,220,149,61,85,185,148,70,235
+    .byte 219,86,35,75,174,231,183,234,163,181,192,91,233,47,73,118,239,153,58,92,105,239,191,55
+    .byte 183,119,123,226,210,221,188,226,6,130,192,242,172,26,143,150,228,175,171,137,121,110,243,140
+    .byte 107,127,65,170,249,127,244,89,133,185,91,182,59,123,67,145,240,237,101,247,240,83,254,238
+    .byte 243,47,52,108,77,194,76,122,251,62,10,189,200,171,247,217,72,158,189,105,246,251,222,119
+    .byte 85,77,191,22,89,190,78,128,254,68,53,233,254,127,245,92,120,243,65,161,254,244,191,114
+    .byte 182,92,236,251,220,142,162,253,99,102,95,250,219,15,238,190,125,249,101,155,125,164,205,84
+    .byte 254,81,210,245,173,75,121,248,247,220,251,236,254,73,186,61,39,213,201,239,31,214,246,220
+    .byte 147,44,52,180,183,119,105,123,43,111,199,241,161,118,93,197,151,107,109,100,39,157,51,89
+    .byte 246,245,138,255,98,234,163,253,59,60,223,162,238,220,242,52,252,212,23,236,140,159,242,111
+    .byte 122,169,125,41,240,28,147,238,211,234,199,235,195,220,205,251,115,110,221,217,254,252,246,195
+    .byte 74,255,196,22,161,111,111,249,242,28,77,109,182,251,211,127,14,53,224,248,102,52,245,250
+    .byte 227,45,36,235,142,224,125,211,168,90,62,206,223,125,238,254,111,189,79,112,35,255,141,185
+    .byte 93,235,29,22,237,32,228,183,155,243,111,59,219,231,245,246,183,255,125,99,224,255,137,86
+    .byte 243,74,218,215,113,231,123,135,119,223,103,79,29,173,179,255,107,178,253,253,173,245,247,203
+    .byte 61,202,67,93,172,242,235,211,213,175,187,123,39,175,127,218,247,26,234,240,213,214,107,61
+    .byte 42,164,150,229,95,254,243,109,218,212,174,246,247,52,60,150,63,44,249,60,125,203,117,246
+    .byte 173,91,151,14,167,229,200,91,63,139,229,124,248,211,3,59,110,245,137,115,251,255,119,183
+    .byte 233,92,115,109,247,209,254,121,243,223,94,191,191,147,155,245,212,241,127,136,254,237,50,250
+    .byte 215,125,149,112,168,246,93,228,190,253,12,134,171,154,43,186,115,190,77,190,95,240,195,37
+    .byte 238,175,207,163,253,221,249,206,118,251,91,248,184,246,126,4,215,167,126,239,34,189,57,177
+    .byte 74,244,255,160,245,63,75,246,250,255,255,123,129,116,239,127,178,4,139,75,111,239,125,41
+    .byte 185,140,215,120,64,35,60,242,37,241,23,183,144,59,187,79,238,252,59,237,89,45,223,112
+    .byte 250,235,244,79,174,238,99,61,213,40,198,215,61,255,114,103,49,25,126,171,120,167,220,145
+    .byte 204,249,124,191,181,255,203,217,153,204,200,184,31,239,225,255,170,198,139,63,213,158,79,94
+    .byte 178,126,204,111,219,131,152,189,253,124,81,114,214,141,203,79,221,74,72,252,207,138,231,210
+    .byte 43,85,181,211,205,123,152,255,201,139,143,49,250,141,247,120,191,3,108,229,210,199,253,245
+    .byte 244,15,207,139,22,234,82,179,90,49,122,95,235,235,228,209,75,79,117,199,216,62,242,191
+    .byte 250,176,191,150,243,60,237,48,114,153,23,219,159,250,191,160,53,209,254,108,199,219,251,235
+    .byte 95,87,223,234,239,126,236,155,247,241,215,39,174,62,182,236,171,246,223,151,171,247,182,235
+    .byte 48,191,47,106,210,190,49,206,177,140,123,225,227,183,232,75,190,57,71,210,110,252,237,71
+    .byte 227,180,208,122,70,134,241,231,172,0,124,212,37,57,211,89,253,170,208,30,27,128,174,199
+    .byte 218,247,255,237,6,246,246,115,253,62,93,119,165,255,35,31,150,94,219,183,29,39,160,249
+    .byte 190,117,88,31,95,165,252,245,117,140,44,54,125,185,82,218,221,226,69,236,250,10,178,217
+    .byte 237,238,93,174,199,207,246,107,182,255,211,255,127,123,212,250,230,129,191,50,218,40,167,211
+    .byte 140,250,195,125,254,218,250,13,246,247,124,228,234,173,70,253,223,223,0,106,221,255,206,243
+    .byte 61,254,51,193,147,104,87,238,233,31,110,94,106,28,126,181,234,186,217,217,225,255,120,70
+    .byte 228,125,15,88,198,157,211,157,191,198,23,239,140,135,108,98,100,81,222,199,127,251,241,199
+    .byte 247,107,175,117,21,121,191,181,81,253,222,129,159,249,222,83,123,243,149,5,160,103,123,126
+    .byte 241,56,91,104,15,235,255,150,21,247,99,8,234,29,243,77,171,246,239,175,96,187,31,239
+    .byte 187,111,190,84,221,252,163,230,159,253,201,236,119,82,153,156,222,249,127,215,155,63,235,56
+    .byte 54,111,202,157,217,247,123,111,82,55,155,254,231,193,229,134,132,127,147,254,219,207,249,75
+    .byte 239,235,94,54,66,62,239,253,45,182,136,198,233,188,233,242,215,245,68,55,191,242,203,46
+    .byte 164,13,237,118,141,83,9,200,220,23,51,6,121,246,118,22,49,227,118,183,175,207,74,255
+    .byte 194,158,179,189,204,194,15,247,30,55,137,143,15,245,252,6,255,214,242,103,154,183,243,252
+    .byte 247,158,28,220,251,177,125,219,126,35,195,220,31,118,202,238,75,179,231,174,175,255,239,106
+    .byte 173,214,31,254,38,87,139,22,142,61,62,165,242,220,146,187,79,198,83,91,158,238,173,153
+    .byte 227,37,220,110,235,239,159,74,73,185,141,78,120,154,251,181,195,199,148,244,47,161,238,219
+    .byte 120,162,115,26,175,191,62,144,15,23,159,134,51,190,137,167,60,105,255,167,175,255,200,139
+    .byte 247,234,245,235,190,214,119,92,27,207,209,147,10,205,206,102,63,254,116,12,120,200,135,103
+    .byte 127,182,27,255,237,29,59,187,111,229,76,210,127,214,97,50,236,252,220,232,182,175,254,186
+    .byte 127,33,122,186,111,207,126,220,149,227,247,150,21,225,115,239,94,234,127,77,174,111,199,187
+    .byte 60,252,93,57,234,219,252,191,220,42,126,207,171,20,191,25,159,126,204,157,253,191,187,223
+    .byte 253,191,239,243,59,184,236,174,236,126,203,58,247,153,243,110,220,206,125,153,219,155,64,188
+    .byte 235,167,231,219,165,162,99,109,81,58,207,159,101,234,222,123,52,231,59,205,14,47,255,244
+    .byte 82,173,196,63,240,125,146,220,254,255,67,194,159,123,255,88,231,156,203,60,230,90,209,213
+    .byte 155,179,57,121,180,42,222,202,240,234,13,238,223,138,71,41,235,189,84,238,87,116,16,185
+    .byte 125,117,96,165,51,105,229,204,85,143,203,43,11,126,251,184,159,142,151,175,123,197,113,115
+    .byte 245,207,191,151,140,180,123,135,42,71,56,130,212,255,232,105,29,203,38,95,170,61,75,27
+    .byte 210,188,147,167,152,230,159,238,185,192,248,14,184,179,229,189,119,183,252,247,127,169,12,133
+    .byte 189,224,188,180,127,148,31,239,98,27,192,223,218,160,166,115,65,178,157,135,38,231,248,119
+    .byte 243,90,223,86,94,45,117,190,249,219,163,251,40,203,67,25,183,250,167,173,108,29,9,185
+    .byte 90,9,197,161,190,157,255,4,12,255,175,171,206,15,47,238,105,172,30,170,189,143,243,217
+    .byte 37,221,93,74,131,44,91,249,252,167,151,102,215,119,180,170,253,156,255,239,97,58,249,235
+    .byte 229,207,215,94,250,77,127,163,54,197,39,254,251,222,189,255,104,222,253,183,126,229,89,52
+    .byte 176,234,227,187,11,228,170,110,151,126,205,206,254,55,234,127,107,182,203,39,253,252,143,157
+    .byte 123,199,184,186,109,33,231,76,202,240,106,251,202,245,212,234,218,183,199,247,191,27,117,154
+    .byte 11,139,190,123,139,243,191,88,233,214,254,147,109,233,221,243,251,247,29,206,209,54,119,111
+    .byte 124,174,231,115,253,42,211,93,237,254,31,174,246,187,227,250,177,209,88,248,167,71,191,152
+    .byte 241,169,47,153,221,86,195,87,206,211,183,167,165,239,190,79,251,71,68,242,252,247,113,166
+    .byte 222,222,157,35,193,176,251,228,247,11,179,252,251,123,172,153,78,57,230,59,143,170,59,247
+    .byte 127,35,223,185,249,199,26,58,6,250,224,166,226,86,107,137,141,116,170,255,96,182,209,127
+    .byte 114,208,47,249,209,47,211,242,223,31,147,222,194,237,198,151,174,155,134,231,96,1,141,121
+    .byte 126,50,151,14,194,117,223,3,126,162,77,22,229,86,255,158,158,166,58,175,107,127,126,39
+    .byte 191,248,56,226,52,211,126,195,159,115,213,253,252,64,215,155,135,38,255,253,245,105,255,239
+    .byte 100,198,193,185,245,124,176,222,161,186,99,210,118,143,98,245,188,115,239,157,165,207,244,119
+    .byte 142,248,231,186,181,203,222,255,105,161,239,58,111,99,126,251,133,111,243,59,250,205,211,115
+    .byte 127,194,213,218,242,21,202,222,147,155,193,247,215,125,189,254,208,45,63,187,77,188,84,105
+    .byte 102,57,239,13,82,222,110,59,187,248,121,180,87,153,187,127,113,47,190,251,157,222,221,251
+    .byte 94,59,172,189,160,246,213,100,231,154,223,60,102,59,181,214,206,70,1,247,201,153,246,135
+    .byte 74,254,91,234,38,30,249,12,107,129,91,231,73,63,92,203,121,229,191,191,219,119,101,250
+    .byte 251,175,74,96,138,158,119,207,252,207,232,250,90,245,230,78,47,175,31,190,64,106,255,142
+    .byte 235,11,239,186,126,62,163,225,117,141,253,93,110,236,252,58,109,63,250,239,237,130,151,94
+    .byte 233,75,217,246,236,78,222,205,185,71,126,106,238,106,255,127,155,62,6,30,115,71,88,221
+    .byte 42,88,180,237,237,231,26,178,120,247,239,215,102,7,172,247,255,220,102,123,63,72,90,109
+    .byte 188,254,233,110,255,55,186,235,229,122,109,93,141,15,153,75,110,50,142,159,189,97,182,48
+    .byte 120,183,125,114,79,191,123,247,187,156,218,81,179,117,155,255,237,187,95,67,191,121,158,147
+    .byte 223,255,246,90,222,30,217,124,255,94,211,165,46,237,184,234,181,49,211,254,237,107,247,207
+    .byte 241,26,70,125,74,23,170,221,153,181,250,240,173,155,127,125,107,250,186,207,249,154,195,27
+    .byte 253,155,253,197,243,79,102,86,109,51,165,218,81,149,94,254,110,238,243,46,185,18,79,212
+    .byte 71,62,61,127,106,126,149,113,1,255,103,235,185,154,223,35,226,175,187,62,241,59,231,151
+    .byte 95,112,231,255,76,233,11,175,46,166,242,206,227,255,175,38,175,221,223,134,195,247,169,129
+    .byte 178,119,215,140,169,180,165,153,166,217,140,251,87,79,146,155,201,122,246,253,41,95,187,79
+    .byte 179,254,229,223,135,250,221,156,38,254,157,78,166,221,54,110,213,183,1,255,239,51,117,191
+    .byte 31,255,162,143,231,36,57,245,185,217,155,218,225,159,113,133,149,7,217,119,148,170,165,150
+    .byte 211,59,63,58,212,102,111,124,247,166,123,253,255,207,126,233,255,131,75,17,53,238,207,246
+    .byte 104,242,61,76,141,237,40,103,61,140,55,53,159,223,254,120,243,235,174,197,121,121,67,252
+    .byte 190,240,252,94,189,168,46,231,94,249,207,230,122,214,207,137,86,127,21,96,252,250,160,176
+    .byte 212,227,175,179,161,123,54,198,76,103,240,65,213,47,237,218,250,253,74,173,113,254,212,177
+    .byte 186,143,79,167,235,243,115,238,143,215,179,215,100,231,246,102,189,129,174,173,62,147,143,15
+    .byte 199,247,242,157,242,226,243,254,189,20,237,54,53,127,246,223,47,191,184,108,116,187,223,192
+    .byte 135,55,247,38,68,225,91,70,107,174,206,173,62,235,124,153,49,156,220,223,63,239,88,14
+    .byte 7,125,133,92,0,94,21,250,31,136,219,253,143,107,167,213,239,241,75,151,121,54,107,58
+    .byte 191,255,126,255,127,63,13,204,249,247,122,62,207,192,3,189,109,218,245,90,206,71,33,16
+    .byte 183,203,54,183,172,178,19,233,223,126,229,218,191,9,78,71,253,253,191,192,189,91,63,173
+    .byte 55,181,113,206,188,11,63,234,155,63,247,206,127,106,171,73,255,231,191,191,255,119,77,195
+    .byte 235,153,234,142,201,217,241,243,175,47,107,155,39,186,193,87,166,130,159,245,216,63,190,123
+    .byte 59,245,239,230,94,245,110,223,62,222,54,117,188,187,243,191,187,169,103,103,127,222,124,93
+    .byte 126,50,210,22,201,243,247,109,243,202,199,214,212,203,217,91,239,145,183,181,215,243,61,46
+    .byte 218,251,127,235,207,175,14,184,197,165,247,159,253,253,71,234,210,118,215,200,203,87,92,92
+    .byte 221,179,78,242,53,153,34,127,233,151,251,86,183,84,174,219,195,89,137,254,123,255,111,185
+    .byte 238,153,134,90,236,233,132,243,223,187,247,134,189,234,254,72,159,123,239,91,191,166,47,118
+    .byte 125,121,213,5,239,244,58,91,190,221,29,235,206,175,239,245,62,58,238,222,193,44,47,91
+    .byte 249,88,191,243,253,185,239,204,39,136,168,250,251,253,33,204,127,207,124,30,26,231,137,121
+    .byte 235,246,254,213,188,182,217,117,215,87,79,234,187,49,255,177,199,228,255,255,185,91,205,191
+    .byte 250,201,159,250,210,250,252,251,58,94,250,251,232,94,106,108,22,166,122,109,163,92,143,189
+    .byte 39,44,6,122,238,96,154,83,123,118,229,212,126,220,31,190,67,181,237,108,38,109,158,134
+    .byte 239,3,248,240,247,189,202,203,87,126,151,172,234,213,59,253,80,210,30,15,151,111,127,102
+    .byte 247,109,40,79,61,95,255,14,196,222,153,245,220,145,31,58,255,190,213,105,119,123,240,167
+    .byte 167,95,111,196,238,151,255,243,175,243,255,122,50,124,169,95,252,245,90,207,19,123,219,169
+    .byte 118,72,83,75,28,202,51,199,99,57,103,102,86,153,194,103,245,215,95,79,25,175,119,217
+    .byte 186,118,163,19,43,201,221,164,246,75,241,193,174,207,240,154,225,125,167,251,41,176,104,170
+    .byte 173,251,173,79,149,246,214,232,102,122,253,255,95,230,196,250,84,223,251,254,234,109,187,173
+    .byte 169,122,255,119,242,252,45,188,109,133,216,158,59,231,227,227,244,126,156,143,123,28,247,242
+    .byte 25,199,235,51,228,255,127,2,195,62,185,102,160,175,62,253,253,167,123,117,175,7,247,114
+    .byte 200,184,79,172,111,45,186,242,207,230,155,87,234,158,141,37,167,251,25,253,202,224,7,237
+    .byte 193,248,210,105,141,37,227,155,210,242,125,252,34,123,159,228,86,187,243,202,183,91,219,175
+    .byte 133,246,213,253,151,255,204,16,7,214,52,191,117,110,180,151,227,6,255,176,190,149,175,193
+    .byte 254,127,218,87,231,243,164,253,189,215,174,245,242,246,253,255,78,14,249,95,185,228,181,235
+    .byte 137,119,255,61,54,103,221,30,237,47,223,255,211,31,140,111,223,25,117,188,38,95,202,70
+    .byte 119,47,211,92,231,238,208,179,84,110,151,164,31,251,231,175,253,255,176,250,27,185,255,106
+    .byte 22,246,5,75,229,253,116,98,209,242,186,84,157,230,226,181,232,122,173,163,57,57,79,180
+    .byte 73,217,142,185,127,165,237,127,222,147,242,234,109,12,201,103,239,95,222,147,214,192,210,43
+    .byte 104,117,46,201,154,155,217,242,112,230,223,243,152,223,122,255,233,243,166,195,94,55,225,224
+    .byte 121,69,216,191,42,116,91,219,3,85,189,124,216,127,108,45,123,182,154,25,63,55,223,94
+    .byte 239,244,187,87,46,243,127,13,251,40,11,49,237,44,128,106,186,233,54,42,181,115,110,254
+    .byte 110,243,74,183,182,251,56,243,143,76,198,234,255,180,59,11,131,210,153,94,207,42,246,255
+    .byte 190,15,163,61,190,226,51,222,106,135,231,127,55,212,245,55,189,254,94,119,255,191,197,190
+    .byte 188,199,178,111,219,230,26,80,252,1,116,233,162,184,252,132,239,201,79,254,213,239,138,74
+    .byte 213,172,35,251,218,158,236,178,180,87,48,105,214,24,160,145,187,247,238,94,214,122,203,89
+    .byte 244,159,121,189,138,23,255,152,255,95,214,109,203,248,231,245,56,22,106,223,225,47,218,225
+    .byte 169,211,123,79,128,54,159,16,106,67,101,124,243,127,162,249,198,125,223,254,249,127,61,224
+    .byte 97,150,126,156,255,81,28,192,179,26,194,179,111,190,29,109,89,174,30,159,254,117,115,123
+    .byte 223,205,45,253,255,174,214,175,179,158,180,181,219,127,218,148,47,15,118,47,220,99,126,59
+    .byte 71,187,253,207,102,252,241,188,127,153,87,142,158,57,247,187,239,188,198,147,125,247,255,95
+    .byte 23,234,238,95,250,141,151,122,122,75,147,189,254,189,98,33,239,35,207,253,60,35,138,212
+    .byte 79,252,119,125,102,169,135,207,153,79,54,143,189,8,253,21,233,31,177,53,159,181,221,22
+    .byte 247,95,95,196,28,219,255,39,150,155,242,244,58,187,244,212,5,186,243,119,251,251,49,246
+    .byte 248,187,33,245,114,125,251,185,41,122,250,52,52,213,251,253,206,229,54,194,81,253,245,251
+    .byte 213,117,116,182,63,187,211,47,90,143,206,60,215,229,141,174,133,223,223,187,124,175,185,37
+    .byte 248,1,187,253,117,157,214,54,111,231,171,209,37,37,63,175,108,223,183,191,70,183,233,232
+    .byte 95,251,246,118,185,19,254,44,151,63,179,219,143,136,12,254,179,138,253,231,93,254,230,255
+    .byte 108,127,252,65,243,162,116,195,126,249,87,53,236,245,191,214,172,155,77,109,203,229,135,121
+    .byte 171,136,73,245,62,240,172,92,19,73,187,255,127,186,251,245,151,254,251,163,174,244,38,58
+    .byte 224,235,214,135,124,249,250,23,105,55,215,159,104,234,181,210,126,57,251,242,139,219,223,102
+    .byte 43,187,80,241,149,103,63,187,123,1,59,52,244,13,21,213,96,148,75,195,235,12,214,99
+    .byte 173,113,239,115,155,247,111,173,255,181,201,174,73,250,190,107,126,182,212,251,219,163,96,180
+    .byte 125,59,55,252,127,61,245,255,110,188,245,168,53,201,156,111,183,152,220,77,255,207,145,102
+    .byte 227,102,75,46,255,237,103,47,159,37,157,97,246,181,142,176,250,94,97,242,251,173,252,165
+    .byte 251,229,176,223,227,191,185,29,250,32,223,255,199,236,183,191,127,229,61,158,194,116,207,242
+    .byte 231,101,101,238,253,110,37,255,85,60,214,254,106,111,221,184,31,93,146,77,221,127,51,204
+    .byte 51,79,207,28,205,212,95,166,119,73,151,54,27,173,67,91,250,222,159,111,250,183,193,182
+    .byte 140,248,196,93,86,238,69,186,158,187,15,177,91,218,153,87,55,251,88,86,174,252,194,58
+    .byte 205,169,190,255,50,157,126,159,160,191,120,14,91,118,185,48,229,178,98,121,60,94,94,93
+    .byte 49,102,61,68,249,121,197,231,95,247,254,29,78,13,134,211,228,205,216,205,182,125,123,212
+    .byte 127,229,75,240,222,121,61,183,127,233,166,245,211,152,71,189,217,103,103,14,76,160,255,187
+    .byte 87,99,246,71,233,247,169,111,232,234,157,185,255,113,84,54,187,27,212,223,191,213,246,212
+    .byte 186,242,173,79,254,87,210,162,47,163,190,254,247,191,62,188,239,246,251,247,61,158,58,58
+    .byte 83,50,115,93,150,66,249,231,144,142,227,161,115,251,57,245,158,111,71,122,113,96,18,90
+    .byte 165,54,52,237,126,8,124,202,58,188,4,250,43,59,184,72,121,94,178,110,45,254,154,253
+    .byte 98,119,150,63,166,63,204,127,188,127,196,189,98,188,167,249,61,22,87,251,23,156,217,249
+    .byte 121,223,239,14,114,252,89,191,235,215,69,127,237,187,157,121,41,195,76,228,254,163,24,94
+    .byte 195,247,153,157,226,202,70,223,151,54,253,116,189,177,99,214,204,39,94,85,45,248,30,250
+    .byte 81,210,136,238,231,121,119,123,23,43,192,243,229,59,54,220,224,179,219,1,190,177,246,239
+    .byte 228,225,70,235,234,134,52,160,95,51,221,213,248,91,45,169,141,179,87,116,188,110,150,139
+    .byte 101,250,10,43,150,35,77,219,243,190,120,219,181,107,127,87,99,170,24,175,79,181,229,155
+    .byte 241,219,123,74,103,27,125,143,254,231,247,124,236,46,249,205,168,113,214,13,246,120,101,255
+    .byte 247,155,133,62,254,203,114,241,249,79,120,124,27,188,177,13,103,175,185,196,119,188,55,77
+    .byte 241,82,196,206,75,156,91,247,102,39,202,100,93,127,111,172,228,218,209,183,246,190,104,236
+    .byte 50,244,235,127,99,201,123,167,158,167,148,242,184,226,241,44,190,126,163,137,43,241,168,99
+    .byte 14,174,212,95,221,252,126,47,159,93,95,122,255,197,120,224,190,211,223,178,119,183,182,212
+    .byte 143,211,247,127,147,188,167,235,186,175,206,2,121,123,61,189,251,87,116,163,255,46,129,157
+    .byte 45,173,127,151,183,190,255,60,100,42,151,191,191,164,98,171,127,169,21,148,181,54,100,253
+    .byte 171,223,168,255,31,207,221,152,202,45,142,183,190,54,122,107,148,229,140,86,191,18,91,150
+    .byte 191,124,203,78,233,236,239,142,17,13,169,87,6,28,240,108,159,174,203,7,223,123,11,89
+    .byte 254,34,170,186,167,51,188,178,206,173,203,179,239,239,59,254,215,183,179,111,190,153,213,88
+    .byte 177,138,109,209,230,95,119,31,222,242,19,171,222,183,67,119,36,239,121,159,28,185,179,225
+    .byte 250,52,138,241,123,177,216,109,96,159,57,50,119,137,22,255,126,123,157,119,133,225,126,153
+    .byte 190,247,94,192,121,101,55,168,105,117,145,249,245,150,255,60,26,230,16,254,149,222,231,170
+    .byte 191,210,111,229,40,157,206,128,214,189,237,200,183,186,78,87,170,158,45,142,202,63,154,58
+    .byte 153,174,113,215,55,230,127,198,63,237,115,155,254,255,73,177,135,197,61,250,216,170,135,4
+    .byte 223,222,173,115,93,46,156,183,239,78,113,233,239,197,200,103,18,254,149,221,45,240,41,254
+    .byte 237,239,30,156,233,100,109,233,157,26,149,154,226,120,227,30,31,175,177,179,71,61,106,212
+    .byte 74,140,161,254,203,30,198,54,195,90,254,50,242,254,125,210,239,189,110,238,220,205,177,123
+    .byte 173,172,248,7,237,120,155,223,56,171,37,153,109,126,146,181,81,245,162,116,233,87,226,157
+    .byte 207,254,251,250,111,71,25,55,61,191,87,236,191,223,75,214,1,223,221,159,209,172,244,154
+    .byte 175,51,191,232,205,93,245,127,48,100,63,65,121,35,203,109,123,255,240,25,189,174,119,96
+    .byte 83,252,220,238,205,165,114,119,191,254,41,202,83,109,183,149,249,137,220,117,188,71,100,12
+    .byte 62,207,163,138,245,2,197,153,25,225,197,230,181,173,219,179,118,177,234,103,86,153,179,127
+    .byte 122,247,129,208,235,62,249,35,238,53,221,167,106,215,164,190,209,189,244,57,199,251,190,77
+    .byte 127,231,206,234,255,109,63,127,21,107,127,96,61,255,126,178,135,85,179,69,216,248,190,103
+    .byte 235,97,223,190,222,153,145,127,208,113,6,57,255,238,228,175,253,95,243,218,245,99,109,222
+    .byte 191,255,77,63,179,203,235,143,153,251,28,172,203,31,156,251,247,79,253,95,127,59,239,97
+    .byte 23,49,207,194,218,222,155,156,37,107,175,252,61,255,214,175,124,57,90,223,175,223,238,243
+    .byte 185,170,194,93,246,189,245,179,245,218,222,123,233,188,251,13,252,231,255,57,23,237,119,247
+    .byte 207,21,86,232,203,116,95,234,254,222,95,228,14,214,43,156,71,146,54,239,147,150,174,124
+    .byte 146,95,249,179,38,217,85,120,169,21,213,115,98,116,227,213,239,234,247,191,159,147,40,145
+    .byte 173,123,151,153,123,250,238,14,255,107,254,115,118,220,252,37,102,200,18,135,217,154,111,255
+    .byte 153,123,127,199,221,147,83,151,104,174,35,237,170,253,147,207,120,218,121,209,198,173,205,206
+    .byte 229,134,164,110,219,154,174,55,18,171,191,227,247,158,224,178,139,27,27,52,5,60,213,42
+    .byte 247,118,179,247,175,95,175,178,248,123,248,233,177,221,252,168,95,78,153,103,248,163,253,238
+    .byte 122,238,106,120,191,190,97,208,132,211,174,43,254,223,67,253,200,151,103,202,120,247,83,90
+    .byte 6,155,75,126,247,61,67,60,205,174,221,255,251,144,207,145,126,118,86,147,175,108,106,184
+    .byte 91,183,104,212,247,91,96,32,118,17,219,220,244,239,200,173,207,221,2,197,134,185,132,236
+    .byte 154,91,164,223,234,120,181,191,146,167,83,119,184,107,255,23,191,60,106,225,229,132,127,213
+    .byte 143,20,255,185,66,130,255,142,79,251,219,188,68,246,227,236,175,92,42,81,61,7,254,102
+    .byte 254,186,189,176,225,29,246,213,201,174,60,239,62,251,6,59,249,110,181,246,120,222,109,168
+    .byte 175,162,255,43,237,3,249,64,217,251,136,227,87,255,249,170,78,173,244,59,3,114,249,60
+    .byte 189,121,41,222,54,127,187,87,165,82,193,149,198,72,103,223,155,134,159,46,119,108,158,239
+    .byte 119,83,175,1,45,119,248,184,184,207,156,207,213,249,211,111,244,179,247,232,223,255,182,200
+    .byte 217,222,118,132,30,223,239,109,78,23,169,3,154,198,239,205,38,213,203,218,93,247,118,63
+    .byte 82,235,158,93,82,221,119,178,31,222,60,222,255,50,255,60,244,220,61,190,123,123,212,231
+    .byte 247,45,102,250,121,174,11,141,26,39,12,204,107,61,215,89,205,115,3,254,30,214,143,63
+    .byte 238,209,87,154,12,34,254,255,97,61,170,239,217,134,211,143,186,227,204,125,73,94,103,87
+    .byte 32,127,255,159,127,187,163,21,166,65,237,232,222,255,35,163,250,162,255,102,226,139,251,191
+    .byte 89,181,12,206,233,25,251,174,103,126,185,175,117,21,223,118,253,174,244,153,151,158,159,52
+    .byte 45,240,115,255,97,66,229,79,67,134,120,28,161,175,254,71,223,240,237,175,242,187,197,155
+    .byte 232,234,46,196,126,180,140,140,160,139,25,56,133,87,22,154,109,250,191,113,78,253,66,95
+    .byte 221,166,102,11,223,159,191,108,147,127,234,156,122,71,38,229,88,84,139,247,247,245,202,246
+    .byte 240,97,88,154,171,120,31,207,132,167,125,247,237,232,105,159,255,227,181,124,247,98,52,122
+    .byte 37,75,215,126,101,211,62,254,53,109,130,134,255,57,247,31,83,61,221,249,234,244,18,87
+    .byte 187,55,62,238,21,59,198,238,231,98,245,255,63,218,140,217,23,211,219,125,159,63,181,63
+    .byte 179,252,253,123,201,246,191,181,234,174,239,157,191,226,54,191,251,219,146,114,62,159,124,78
+    .byte 92,241,128,120,210,63,144,157,202,113,114,255,62,175,190,255,238,251,251,216,40,250,169,191
+    .byte 213,251,97,43,145,94,137,202,212,11,82,255,235,151,255,154,118,176,173,16,111,135,203,131
+    .byte 50,39,37,239,26,228,44,163,3,247,108,62,49,148,170,50,195,253,212,125,41,137,91,233
+    .byte 206,51,190,220,252,236,87,218,107,255,182,127,186,197,31,75,221,186,68,172,206,54,191,21
+    .byte 188,239,186,103,173,105,93,208,156,221,21,120,190,178,223,214,114,234,253,170,122,255,253,159
+    .byte 254,107,117,207,237,117,62,182,245,53,69,190,209,123,218,158,253,91,119,239,243,110,247,255
+    .byte 58,39,239,218,10,176,52,114,221,190,143,109,72,126,123,229,47,236,55,127,127,224,185,208
+    .byte 115,243,86,7,203,95,254,125,221,248,173,115,249,255,168,126,94,227,235,211,183,89,180,126
+    .byte 179,255,249,93,140,241,138,108,219,62,215,219,187,207,235,79,226,238,31,214,108,178,159,254
+    .byte 221,179,86,255,235,180,254,246,127,225,45,187,77,222,235,255,158,44,255,173,202,151,255,171
+    .byte 159,231,143,127,125,107,248,67,253,91,102,250,131,172,204,119,106,111,227,245,191,223,179,87
+    .byte 221,248,251,250,167,114,159,12,67,249,207,5,238,31,251,248,249,59,160,188,121,87,255,146
+    .byte 70,57,15,87,157,53,184,190,217,192,198,84,63,228,247,18,28,246,186,7,147,58,240,150
+    .byte 84,88,207,191,134,221,118,232,205,203,184,29,123,102,239,125,251,254,37,211,222,212,242,246
+    .byte 116,190,190,63,142,10,201,28,226,235,183,110,218,182,93,199,56,63,168,172,251,195,223,123
+    .byte 249,61,156,167,227,74,187,120,223,191,188,60,253,191,23,163,178,203,125,23,185,239,214,182
+    .byte 255,231,255,233,252,188,125,127,219,61,79,171,232,207,114,235,204,91,159,112,231,171,187,182
+    .byte 229,167,238,175,13,61,226,83,187,243,226,73,4,157,216,59,116,254,2,127,251,124,31,222
+    .byte 91,122,171,254,242,114,239,177,249,171,244,188,190,167,147,186,250,191,241,71,173,119,85,197
+    .byte 56,119,233,35,47,237,176,220,77,254,156,26,154,245,222,209,247,199,87,103,157,140,73,217
+    .byte 175,124,239,120,176,177,181,243,60,23,246,90,243,164,237,111,126,122,83,102,99,187,109,115
+    .byte 251,171,219,2,228,238,44,247,205,83,121,241,254,148,140,251,191,222,175,187,219,203,147,31
+    .byte 182,109,191,172,23,216,106,107,119,196,241,255,69,127,200,223,91,135,237,82,195,236,197,47
+    .byte 92,60,158,90,252,119,173,239,167,188,189,103,172,78,27,244,141,238,250,215,159,213,199,213
+    .byte 209,214,38,128,0,133,222,220,93,115,206,93,144,2,216,156,158,178,63,202,0,139,217,27
+    .byte 107,38,196,227,246,237,191,90,177,229,126,133,161,28,87,223,175,133,166,95,220,82,75,63
+    .byte 28,168,55,34,161,11,107,237,63,46,231,140,239,44,254,99,185,15,218,247,74,117,31,219
+    .byte 203,78,173,189,47,207,115,219,99,238,149,190,183,224,143,134,116,137,79,228,172,86,241,104
+    .byte 250,121,63,235,238,246,213,230,19,227,51,237,254,242,201,63,197,126,235,70,167,238,239,33
+    .byte 149,187,251,64,219,249,127,239,126,157,170,251,255,51,244,116,237,77,227,255,223,59,207,221
+    .byte 177,150,253,143,199,211,199,234,102,223,175,229,172,110,141,31,207,185,205,101,253,255,121,65
+    .byte 230,163,240,226,92,181,252,15,59,203,190,160,148,107,242,245,50,158,77,153,88,60,175,207
+    .byte 46,87,156,177,59,193,79,218,201,237,153,91,107,212,188,243,245,47,155,127,239,14,216,151
+    .byte 236,237,151,212,91,254,115,120,252,111,62,191,93,48,255,239,67,62,120,103,237,249,236,152
+    .byte 239,250,51,253,171,235,205,222,245,150,255,167,166,166,249,163,239,250,191,251,254,220,54,157
+    .byte 183,152,81,199,171,231,252,81,223,222,45,242,236,104,11,46,120,209,90,223,63,243,158,197
+    .byte 34,63,202,188,107,232,244,252,107,191,223,253,202,67,253,113,119,181,87,219,91,94,46,115
+    .byte 1,245,214,78,184,163,215,102,139,254,235,56,103,189,145,172,231,69,36,255,250,242,183,255
+    .byte 180,232,193,174,47,181,185,127,217,122,253,191,126,29,218,241,237,174,31,79,246,182,189,190
+    .byte 58,149,34,220,178,97,213,80,222,254,108,223,239,181,219,102,239,120,51,207,26,39,117,124
+    .byte 234,35,52,219,11,150,221,191,255,207,2,124,141,126,247,119,95,222,215,71,5,173,231,248
+    .byte 76,36,188,158,38,239,50,187,152,100,126,95,249,171,253,111,223,161,253,236,172,55,55,126
+    .byte 127,188,163,190,112,23,119,184,39,63,45,134,165,194,184,185,62,213,95,114,123,60,251,195
+    .byte 199,237,70,239,212,253,168,170,23,141,41,104,219,123,117,58,252,171,121,255,105,4,47,28
+    .byte 199,77,43,254,63,94,213,255,254,230,246,105,110,134,111,245,233,201,244,213,239,175,41,120
+    .byte 39,77,242,87,59,110,110,207,195,251,233,62,121,25,117,252,213,115,36,212,220,123,171,63
+    .byte 167,31,250,184,216,188,237,252,229,254,75,142,189,143,54,149,152,183,122,115,155,191,127,188
+    .byte 140,70,170,249,38,187,252,70,47,223,237,243,220,15,27,239,156,4,106,89,111,218,246,229
+    .byte 50,255,178,81,12,199,243,6,139,95,254,153,181,114,237,246,246,217,44,207,245,255,50,59
+    .byte 254,237,136,157,253,180,63,238,125,182,77,45,250,255,55,247,236,60,199,188,230,247,118,239
+    .byte 91,50,124,101,139,103,255,79,215,166,239,188,217,231,78,58,122,127,239,135,56,247,222,246
+    .byte 157,192,5,186,206,250,48,105,254,180,255,18,241,182,254,239,77,23,244,86,125,187,251,214
+    .byte 11,123,231,205,31,79,213,95,190,53,254,116,157,224,203,234,99,25,182,208,252,223,253,54
+    .byte 203,78,235,14,214,169,231,116,242,35,253,110,255,149,94,156,198,75,80,199,31,204,108,7
+    .byte 80,93,126,189,142,255,120,211,191,114,23,122,86,255,136,220,206,57,255,164,95,236,119,178
+    .byte 245,89,123,118,239,73,69,186,20,227,195,201,88,109,253,139,179,183,110,217,183,247,101,13
+    .byte 183,134,231,200,69,236,33,149,241,78,227,95,115,223,181,1,254,230,15,221,243,215,215,10
+    .byte 115,239,159,22,245,56,174,206,247,119,79,30,207,237,253,77,255,215,249,214,221,254,108,187
+    .byte 217,239,169,243,190,215,12,178,59,219,154,219,34,20,186,250,187,242,18,159,57,215,190,163
+    .byte 191,96,159,127,126,85,114,37,223,55,75,86,214,106,242,255,67,116,157,197,57,34,207,47
+    .byte 133,196,54,103,125,249,53,237,43,254,86,95,185,126,221,119,175,154,101,191,87,111,186,231
+    .byte 87,181,113,106,185,109,76,91,34,135,182,15,249,31,249,250,186,183,142,165,27,127,233,177
+    .byte 189,84,30,142,174,87,220,100,239,51,14,35,231,131,119,103,251,61,192,57,237,65,215,111
+    .byte 230,71,175,178,103,178,124,225,71,213,221,212,2,197,120,196,73,242,79,233,68,153,242,191
+    .byte 100,221,249,141,237,34,95,91,203,239,175,173,209,153,178,251,255,126,247,127,54,239,189,167
+    .byte 93,178,212,247,175,255,47,213,200,63,154,110,140,24,187,115,100,182,245,184,190,67,134,52
+    .byte 193,122,124,117,30,100,215,183,83,109,127,165,190,113,197,251,135,54,237,104,245,110,102,167
+    .byte 19,86,204,242,223,101,79,3,218,153,109,111,185,223,111,119,247,245,71,79,249,220,119,245
+    .byte 26,64,236,191,241,192,142,33,86,167,61,101,177,127,197,125,246,200,237,202,251,90,229,247
+    .byte 190,235,123,230,127,40,221,245,210,242,167,250,196,162,167,88,95,197,245,246,125,240,247,207
+    .byte 89,86,230,127,91,46,31,6,252,62,16,144,253,157,244,239,133,181,175,254,145,103,61,219
+    .byte 119,95,183,246,159,202,215,231,163,252,96,41,42,190,219,219,243,116,219,48,146,190,125,187
+    .byte 79,95,188,206,225,159,180,63,41,253,73,181,246,19,105,127,246,254,15,175,55,227,227,193
+    .byte 177,163,200,196,91,191,209,219,43,251,88,43,208,53,89,254,165,115,254,143,72,93,250,217
+    .byte 227,95,175,79,102,179,191,251,134,133,76,39,155,237,199,93,154,94,63,102,57,95,202,111
+    .byte 91,188,195,44,237,224,76,20,247,125,231,143,95,26,140,251,198,253,233,228,187,179,5,172
+    .byte 47,14,63,60,126,244,18,229,210,230,222,255,113,221,109,51,247,150,250,47,237,116,207,151
+    .byte 31,187,121,107,21,238,89,254,248,147,237,119,246,217,23,189,18,191,254,155,219,63,175,180
+    .byte 212,247,117,164,189,152,247,249,242,253,207,239,49,213,98,123,253,238,78,55,207,238,230,85
+    .byte 255,47,83,37,77,229,219,117,198,146,185,199,122,37,26,123,211,133,253,233,226,170,235,238
+    .byte 119,224,175,185,151,191,243,111,43,63,255,15,111,203,254,133,181,252,247,107,247,70,59,187
+    .byte 255,74,78,103,238,127,205,208,180,178,191,68,181,250,242,77,143,202,204,177,222,159,213,121
+    .byte 159,219,217,193,220,252,246,125,239,233,125,233,204,118,240,238,143,93,117,219,228,108,181,100
+    .byte 221,247,83,179,252,239,109,97,70,251,121,243,71,223,101,181,223,222,38,252,14,194,155,191
+    .byte 214,90,219,120,157,240,236,238,253,234,115,233,241,121,236,158,31,84,161,90,194,179,89,61
+    .byte 119,251,85,158,135,135,219,207,247,238,175,71,203,252,210,159,198,103,220,236,241,120,113,225
+    .byte 254,155,93,139,37,38,169,230,33,139,198,213,122,179,119,242,255,249,15,234,67,217,247,87
+    .byte 81,201,185,95,148,29,253,127,86,241,253,251,95,168,186,176,111,249,163,255,83,203,185,176
+    .byte 253,111,211,246,74,238,159,234,115,220,221,83,43,189,156,111,48,105,37,187,183,255,55,194
+    .byte 214,127,197,89,245,141,247,223,158,76,14,230,75,230,119,89,217,172,160,86,242,133,23,202
+    .byte 127,75,234,59,28,236,175,47,251,202,247,251,221,203,121,138,79,92,175,241,246,254,56,247
+    .byte 63,44,115,245,143,161,217,192,253,107,231,205,73,30,87,251,205,195,52,52,95,39,255,188
+    .byte 253,51,107,191,214,171,196,111,16,52,152,89,92,251,23,118,185,187,255,217,94,223,167,157
+    .byte 105,13,159,44,235,121,255,238,148,136,190,163,143,197,166,60,29,178,215,77,189,156,126,217
+    .byte 26,235,8,171,11,233,246,110,154,204,93,111,72,174,135,191,183,118,119,191,206,231,220,116
+    .byte 253,255,198,155,140,199,219,126,167,215,74,166,72,110,113,77,99,171,108,156,207,211,131,39
+    .byte 20,191,32,127,86,133,201,119,89,77,75,78,222,158,157,237,216,151,54,234,158,186,47,109
+    .byte 184,234,246,124,188,61,250,244,252,204,47,191,130,102,147,229,189,75,241,223,223,126,173,219
+    .byte 175,215,151,123,115,199,191,123,201,91,214,229,153,189,227,86,149,27,235,217,125,151,103,164
+    .byte 234,91,127,208,180,1,187,241,151,254,248,217,84,118,101,177,201,28,135,54,151,191,139,185
+    .byte 214,123,231,197,209,165,183,18,88,125,228,159,109,11,78,126,200,181,254,4,4,255,134,17
+    .byte 236,125,254,175,237,223,37,108,80,79,125,252,86,251,79,75,220,221,84,105,91,59,156,118
+    .byte 110,143,31,68,215,167,250,230,53,44,255,187,183,85,241,41,19,105,101,110,237,184,119,41
+    .byte 199,206,37,183,176,193,211,63,150,231,122,254,83,117,99,231,127,59,109,255,5,215,74,231
+    .byte 37,82,195,169,228,232,157,106,110,9,250,179,231,191,233,240,247,229,182,95,75,106,110,191
+    .byte 46,255,153,51,204,59,159,86,177,242,63,226,240,227,251,94,247,166,28,56,248,231,165,77
+    .byte 186,244,199,170,31,83,241,61,199,159,229,191,223,253,125,213,235,111,246,111,236,62,54,18
+    .byte 221,168,163,247,189,158,47,20,241,191,205,119,246,119,72,110,191,254,255,223,46,223,213,247
+    .byte 136,95,235,178,122,192,75,255,229,48,255,119,24,142,223,127,165,238,159,235,30,62,63,184
+    .byte 110,81,106,124,234,95,213,123,241,242,173,190,249,158,184,101,223,218,119,215,155,251,191,102
+    .byte 173,232,213,222,255,111,215,235,45,190,254,30,227,217,246,194,175,182,223,154,167,253,139,31
+    .byte 221,86,181,223,187,207,75,149,230,192,253,254,251,158,254,221,251,62,80,215,31,121,251,105
+    .byte 238,253,86,167,238,195,174,159,190,207,242,218,41,6,162,252,30,171,219,88,107,74,124,217
+    .byte 232,169,95,130,160,243,191,227,254,223,122,179,24,55,215,254,214,252,250,221,38,207,95,218
+    .byte 167,163,13,170,187,156,205,125,49,120,207,175,187,151,190,125,255,254,111,86,255,71,185,230
+    .byte 85,249,165,237,220,247,79,93,126,244,116,125,23,138,38,198,86,191,215,168,57,14,108,252
+    .byte 255,191,86,194,55,33,37,126,78,104,211,216,47,193,127,158,82,225,42,224,82,65,246,170
+    .byte 153,80,223,223,190,244,171,250,188,85,223,114,99,190,205,95,179,18,180,132,244,94,251,203
+    .byte 122,252,253,236,58,252,183,173,175,169,90,220,243,192,103,123,63,254,97,164,120,239,213,166
+    .byte 245,255,159,18,243,82,119,253,239,110,82,215,126,193,47,183,62,99,126,212,148,94,188,126
+    .byte 249,120,191,117,21,34,168,175,103,253,208,212,151,3,25,239,14,189,26,210,142,59,155,192
+    .byte 33,183,226,88,69,116,183,191,158,191,255,107,101,61,238,39,187,61,245,192,238,94,129,215
+    .byte 119,7,13,89,189,243,207,203,51,153,95,44,245,127,55,140,170,189,255,51,245,182,150,14
+    .byte 248,191,237,106,205,203,27,209,154,159,47,45,238,55,211,253,189,179,210,228,119,238,209,121
+    .byte 146,85,190,51,51,122,190,205,31,235,127,68,25,213,205,244,191,151,139,203,73,198,255,220
+    .byte 121,251,31,155,156,239,140,188,72,249,197,219,199,57,222,119,237,221,189,205,207,58,136,12
+    .byte 157,206,58,143,248,175,218,140,68,115,87,231,31,174,203,228,127,132,20,242,51,232,253,115
+    .byte 163,165,204,183,176,111,169,104,247,96,174,86,2,157,237,253,183,245,87,212,234,17,247,236
+    .byte 214,225,191,72,134,167,126,77,187,220,229,190,106,92,239,110,217,253,133,207,147,243,87,235
+    .byte 83,150,126,31,255,119,162,83,233,117,231,211,177,204,165,242,158,20,112,178,246,126,239,41
+    .byte 14,89,16,175,253,38,206,242,184,146,214,81,221,139,71,179,173,73,158,254,213,143,161,187
+    .byte 206,40,251,165,239,13,16,187,187,222,247,157,173,155,157,204,88,148,237,53,122,47,126,116
+    .byte 254,161,91,24,53,226,67,86,243,126,246,239,223,99,215,156,109,227,122,132,17,59,159,191
+    .byte 249,239,200,211,213,255,165,2,194,215,148,171,203,211,79,67,118,251,211,62,189,58,227,142
+    .byte 219,35,196,59,205,223,182,235,239,10,245,143,75,158,43,104,150,239,30,21,218,53,63,157
+    .byte 88,207,110,114,191,250,184,87,230,202,18,69,245,201,231,90,119,229,220,151,111,91,55,31
+    .byte 215,173,177,123,94,164,248,45,43,103,248,188,236,93,245,116,219,211,126,236,238,252,145,199
+    .byte 127,215,82,240,251,63,254,159,246,59,238,187,182,49,191,253,183,158,206,247,239,89,254,199
+    .byte 94,95,61,250,179,156,197,123,195,58,247,244,223,189,127,247,240,91,92,19,113,221,255,93
+    .byte 117,115,83,37,183,211,197,70,60,228,188,251,87,223,246,249,249,178,242,244,153,255,91,201
+    .byte 44,35,199,197,9,179,135,244,194,179,88,207,158,220,171,235,44,178,43,253,111,246,13,176
+    .byte 143,175,172,62,241,105,117,66,170,102,3,152,136,163,85,117,174,77,225,207,247,178,87,223
+    .byte 235,141,52,225,239,199,24,156,254,250,182,165,239,126,153,137,31,252,120,118,212,251,220,237
+    .byte 79,82,118,221,101,90,95,45,5,242,30,63,250,198,230,255,214,25,62,90,252,39,247,146
+    .byte 106,105,173,124,223,35,81,249,105,187,215,190,118,220,221,104,52,255,154,103,127,62,171,172
+    .byte 254,199,25,91,125,126,252,95,156,165,183,246,247,224,167,159,123,229,159,103,19,194,11,222
+    .byte 182,243,219,97,136,113,127,124,202,220,66,31,67,71,203,239,84,185,221,133,223,237,219,47
+    .byte 187,169,151,244,209,126,62,30,203,74,255,219,93,100,62,227,254,142,151,248,127,48,243,255
+    .byte 251,78,61,127,109,213,198,235,25,131,63,11,206,197,78,233,207,221,183,166,29,116,114,221
+    .byte 59,223,127,28,53,198,26,143,119,111,216,124,206,226,252,155,231,159,244,12,238,199,228,223
+    .byte 231,208,254,58,18,167,127,123,249,231,187,88,191,213,198,105,59,221,137,31,46,79,221,215
+    .byte 67,254,125,239,183,251,75,22,204,255,25,52,134,253,239,108,15,240,1,221,251,175,143,247
+    .byte 213,150,175,239,130,254,200,127,126,105,84,241,55,109,242,241,219,255,255,157,251,189,85,172
+    .byte 95,163,235,207,78,248,93,168,118,116,223,14,227,111,239,54,43,198,103,8,171,204,123,242
+    .byte 246,51,107,217,244,200,158,86,127,214,91,142,25,166,253,116,124,35,236,95,101,222,72,158
+    .byte 223,207,115,119,239,127,83,143,176,183,15,222,191,203,188,111,225,28,98,77,223,198,111,191
+    .byte 135,4,218,25,250,123,221,78,157,238,211,137,249,227,159,239,205,77,247,253,130,157,221,62
+    .byte 201,239,235,122,218,126,247,91,123,193,187,151,241,20,238,180,231,217,254,218,44,223,254,109
+    .byte 241,54,161,219,220,127,76,141,151,239,121,151,218,110,179,7,66,68,186,100,109,94,211,223
+    .byte 229,252,177,37,55,153,238,19,238,164,254,38,54,186,244,126,223,246,135,143,95,183,203,158
+    .byte 215,119,213,59,118,61,79,189,110,109,238,219,223,105,227,124,141,56,154,194,17,242,222,225
+    .byte 12,105,43,98,182,22,254,73,165,228,119,69,95,169,18,239,219,194,15,33,200,125,22,243
+    .byte 198,101,11,79,110,238,49,250,100,125,77,171,31,184,248,227,148,240,180,151,151,74,98,214
+    .byte 253,19,131,189,241,188,39,77,39,16,83,240,231,233,20,176,87,191,163,119,92,180,125,244
+    .byte 111,99,231,156,182,243,185,128,169,235,103,249,42,203,45,255,44,183,219,111,125,99,225,237
+    .byte 83,238,94,24,221,253,199,94,38,139,52,244,223,189,125,221,254,249,9,181,123,209,201,231
+    .byte 191,206,240,70,107,248,143,61,220,71,85,15,251,116,115,140,139,174,91,171,252,112,47,173
+    .byte 252,170,84,78,87,191,174,121,137,111,57,135,53,245,205,163,227,97,143,187,221,185,142,245
+    .byte 8,132,96,117,239,253,12,242,188,89,242,30,177,78,218,86,53,116,205,95,62,60,173,202
+    .byte 183,123,238,218,227,195,71,237,234,214,59,250,229,187,105,227,191,39,251,245,119,251,223,55
+    .byte 201,47,172,207,89,148,230,250,47,179,155,183,222,157,241,254,217,190,191,214,192,151,32,117
+    .byte 230,184,254,62,84,231,147,239,37,252,230,114,227,92,114,15,120,100,55,230,199,220,135,221
+    .byte 108,151,215,59,223,195,213,211,161,126,244,201,92,171,253,92,191,255,83,234,145,56,246,238
+    .byte 251,87,237,23,191,98,254,100,55,125,133,179,121,137,53,112,52,136,213,165,243,166,127,222
+    .byte 233,53,220,234,143,255,140,23,117,183,233,119,170,221,101,201,243,27,154,17,154,139,207,156
+    .byte 174,184,173,191,187,90,63,113,27,207,227,239,55,114,206,68,190,112,191,166,228,191,223,134
+    .byte 208,251,123,199,181,17,153,117,130,189,48,21,191,90,11,205,89,63,253,108,212,30,239,245
+    .byte 106,222,78,238,62,99,255,255,77,60,205,33,45,0,191,191,192,124,237,49,35,251,69,228
+    .byte 149,78,243,255,125,214,76,126,45,233,79,115,90,30,191,197,182,219,186,119,58,109,113,213
+    .byte 250,255,86,127,253,173,127,150,216,245,223,135,186,251,231,142,110,75,245,191,111,74,144,35
+    .byte 229,95,250,255,102,126,144,77,157,207,194,19,87,12,254,12,244,78,243,208,202,148,93,232
+    .byte 126,122,20,157,255,124,129,158,3,155,211,231,80,148,78,215,254,157,219,191,217,217,154,254
+    .byte 16,59,87,244,255,175,135,55,210,167,206,47,151,55,189,255,75,173,239,223,236,126,147,254
+    .byte 230,75,190,140,206,189,215,103,29,229,13,232,223,94,223,254,29,228,49,111,239,187,99,159
+    .byte 216,78,244,166,179,102,91,45,237,4,6,240,134,99,219,197,236,219,121,19,250,17,159,110
+    .byte 247,215,217,74,90,251,165,143,61,116,232,199,120,75,190,59,239,91,75,107,81,40,220,15
+    .byte 134,157,125,113,51,35,71,248,135,203,223,10,61,226,107,191,101,189,227,61,196,238,218,63
+    .byte 230,235,118,79,78,103,241,78,116,77,203,181,130,99,180,214,218,240,159,199,109,29,154,123
+    .byte 251,197,92,191,175,247,156,139,228,216,24,207,255,150,120,221,231,75,35,215,135,95,175,91
+    .byte 212,222,223,191,225,189,255,187,95,199,213,125,157,159,142,227,219,22,110,182,217,95,191,187
+    .byte 107,247,229,235,63,127,255,59,171,195,90,157,74,111,171,127,52,190,191,192,21,141,212,109
+    .byte 87,69,239,152,163,235,29,242,88,221,52,170,189,158,207,204,175,125,60,63,253,123,62,234
+    .byte 45,247,107,88,207,242,23,226,112,203,95,155,254,250,217,112,39,127,94,237,57,20,62,251
+    .byte 217,42,82,107,154,214,223,217,173,29,214,183,230,127,249,221,117,173,85,237,46,213,123,164
+    .byte 37,36,231,84,255,247,247,109,29,88,239,21,220,179,219,178,224,228,203,197,234,126,251,199
+    .byte 46,237,90,133,242,93,126,31,195,49,217,126,195,117,247,180,188,88,234,233,230,203,166,215
+    .byte 183,207,242,119,118,252,194,43,92,251,185,22,218,185,191,76,189,106,157,206,222,237,165,239
+    .byte 181,211,173,255,250,235,97,159,220,162,122,183,250,127,87,229,223,0,253,126,194,175,175,207
+    .byte 239,53,182,182,194,247,184,188,53,109,241,82,63,241,248,232,223,140,79,248,108,156,126,184
+    .byte 141,242,253,60,195,49,54,237,12,175,57,68,47,219,215,67,75,254,180,126,220,237,181,40
+    .byte 160,255,159,191,216,53,205,139,52,79,123,253,179,31,165,61,172,182,20,136,145,255,112,95
+    .byte 222,147,159,207,123,123,251,90,125,109,110,244,85,146,191,67,223,244,246,16,86,189,126,130
+    .byte 219,219,207,246,197,99,62,222,30,207,125,230,124,255,239,126,175,190,111,239,235,244,215,21
+    .byte 118,255,251,165,184,227,215,157,24,247,93,140,54,121,75,100,210,246,237,49,118,183,46,199
+    .byte 22,87,229,113,251,242,85,78,213,230,120,120,204,180,243,241,185,206,210,157,217,221,169,225
+    .byte 205,122,239,179,39,209,183,253,213,85,113,252,114,254,185,86,12,251,75,157,122,233,223,63
+    .byte 236,59,0,252,246,105,116,60,253,67,235,58,158,235,76,95,135,243,253,126,231,255,63,8
+    .byte 229,127,12,95,87,235,75,252,239,217,142,190,247,126,251,237,103,188,219,138,14,60,197,173
+    .byte 84,79,247,119,79,121,173,71,237,218,117,132,237,123,123,221,186,189,231,210,83,106,32,200
+    .byte 166,245,99,219,158,17,19,198,183,201,13,126,220,149,95,251,161,212,226,174,127,43,223,98
+    .byte 55,249,147,238,176,130,253,123,221,129,197,126,53,227,229,46,244,199,93,249,245,177,61,201
+    .byte 35,255,72,145,89,117,1,205,148,203,198,241,166,76,191,175,175,126,78,221,200,63,186,248
+    .byte 28,247,95,99,253,191,60,14,246,242,226,183,233,95,243,55,182,218,211,236,95,171,243,87
+    .byte 61,202,207,115,63,191,33,236,247,15,52,237,125,195,206,254,111,111,236,249,230,232,253,79
+    .byte 237,127,207,127,180,30,10,248,245,254,147,213,64,212,197,91,249,242,178,61,124,60,233,179
+    .byte 238,20,228,241,228,203,227,241,122,65,211,123,255,190,188,83,5,217,62,255,207,124,245,95
+    .byte 189,123,95,145,252,251,217,103,219,211,240,57,239,122,37,118,239,236,195,235,216,190,58,252
+    .byte 105,151,253,144,183,11,94,53,253,190,158,91,237,8,185,57,108,190,33,141,236,106,235,175
+    .byte 255,0,36,251,251,205,54,177,170,119,237,251,115,138,157,215,110,237,91,253,110,103,241,188
+    .byte 237,242,246,45,174,93,44,90,125,161,178,254,178,93,219,138,209,243,203,171,182,92,195,65
+    .byte 111,234,41,106,115,165,206,244,185,193,120,55,230,183,215,99,149,159,138,63,215,29,56,60
+    .byte 150,235,87,171,217,39,60,251,118,133,197,234,229,118,242,172,196,150,99,88,196,230,233,114
+    .byte 79,126,35,85,47,237,111,80,43,43,238,185,137,250,0,117,255,94,126,75,127,191,251,71
+    .byte 151,213,22,56,63,86,191,238,123,21,46,208,122,245,253,11,186,255,171,173,59,255,127,88
+    .byte 255,189,74,127,255,165,253,250,223,247,163,207,94,124,237,205,44,152,151,22,252,249,236,223
+    .byte 86,224,9,250,109,136,181,206,230,124,239,181,223,95,247,84,31,31,7,74,188,66,82,189
+    .byte 9,127,207,251,222,214,127,127,175,236,186,143,53,231,159,186,172,233,107,189,106,116,219,231
+    .byte 54,29,180,236,58,142,183,45,93,62,100,150,220,53,132,83,207,187,199,229,159,141,252,222
+    .byte 102,199,155,75,226,218,73,77,129,203,85,75,166,228,217,107,108,221,113,162,94,230,254,88
+    .byte 117,223,155,115,253,222,171,251,46,173,141,151,41,206,203,135,223,111,222,213,255,151,255,254
+    .byte 59,254,109,208,122,250,45,215,228,188,77,227,74,181,250,63,231,251,123,10,83,24,123,245
+    .byte 205,245,254,182,206,94,231,237,247,118,29,242,160,175,156,239,171,125,251,111,85,173,239,76
+    .byte 52,255,154,203,78,205,109,42,143,125,221,246,142,159,26,31,239,155,22,86,103,53,227,78
+    .byte 149,184,237,155,203,60,242,255,73,143,250,102,148,18,126,233,126,27,249,190,181,107,34,191
+    .byte 165,123,247,115,42,90,148,88,175,189,174,125,243,191,185,30,223,221,253,168,253,86,170,175
+    .byte 177,121,240,190,55,254,248,255,162,126,181,191,130,103,178,35,181,205,125,38,11,4,59,253
+    .byte 107,181,14,30,16,200,63,96,180,129,28,158,249,31,117,255,59,103,159,7,254,249,253,147
+    .byte 63,105,19,226,239,39,235,253,243,171,176,79,62,39,102,229,164,124,54,135,111,126,122,153
+    .byte 237,122,188,14,116,120,241,109,138,247,108,206,87,78,191,252,144,55,189,55,151,81,227,194
+    .byte 243,155,206,117,246,139,247,56,95,235,114,132,188,77,63,29,93,93,190,27,53,135,233,161
+    .byte 255,29,63,245,229,151,56,118,85,191,180,100,238,233,107,205,51,200,232,255,249,127,253,237
+    .byte 237,223,210,250,187,37,187,249,180,251,133,125,29,166,251,215,224,55,28,245,70,111,55,171
+    .byte 121,109,73,225,199,67,252,195,57,62,159,254,62,192,149,168,223,242,240,231,218,214,221,207
+    .byte 174,118,221,137,222,119,217,193,252,125,42,235,173,191,79,172,239,79,119,219,127,97,9,251
+    .byte 206,182,170,220,193,245,173,255,214,31,51,158,241,60,76,239,190,129,155,108,169,69,221,31
+    .byte 253,94,183,109,28,238,113,143,15,183,246,255,134,91,170,223,62,226,167,55,211,93,126,248
+    .byte 246,219,22,211,107,175,175,125,252,48,95,73,197,198,191,206,235,185,187,6,185,69,209,194
+    .byte 208,135,207,246,214,62,94,187,125,191,218,252,119,7,254,47,211,189,99,143,221,253,140,247
+    .byte 110,255,111,240,188,176,102,175,55,212,203,245,41,140,123,236,121,28,123,227,189,104,7,215
+    .byte 119,190,184,142,238,253,236,94,189,239,249,90,125,110,117,237,87,121,119,113,219,201,155,180
+    .byte 252,163,189,242,100,19,238,118,183,113,109,238,228,237,75,82,118,190,31,247,194,19,189,197
+    .byte 190,213,121,56,251,46,40,180,55,255,110,59,62,197,214,163,112,183,220,74,138,79,132,127
+    .byte 216,188,223,166,151,188,186,175,182,101,58,220,119,255,95,172,217,123,86,109,91,251,102,163
+    .byte 179,54,255,173,123,241,93,158,62,105,254,222,188,21,47,89,190,231,85,255,215,255,214,90
+    .byte 251,54,150,246,237,134,19,75,225,158,112,124,242,187,58,217,167,124,154,232,157,87,48,167
+    .byte 254,255,169,121,69,211,65,93,62,249,116,245,167,47,244,251,175,255,236,241,229,167,219,246
+    .byte 101,102,253,113,225,122,87,63,236,49,95,216,255,253,223,182,178,225,246,211,253,229,252,159
+    .byte 158,19,231,11,232,60,165,147,109,182,207,30,172,254,191,174,17,103,187,22,236,114,119,141
+    .byte 139,55,208,79,255,239,49,23,152,86,57,203,140,214,197,13,223,30,158,107,222,153,8,252
+    .byte 191,127,70,188,129,44,66,215,238,55,254,194,251,93,116,127,177,86,217,234,127,196,93,118
+    .byte 94,54,31,157,177,163,51,182,231,123,56,125,83,175,244,217,57,173,191,234,161,250,255,248
+    .byte 143,156,171,82,127,119,63,236,115,158,253,156,41,79,226,245,85,99,217,191,38,15,227,249
+    .byte 118,187,218,204,143,165,83,237,67,210,215,125,39,70,68,114,224,187,125,117,174,161,232,164
+    .byte 90,116,189,203,129,75,222,118,185,237,62,183,95,71,54,109,162,222,254,53,79,118,100,81
+    .byte 152,204,79,81,103,240,183,64,243,221,126,48,94,96,251,57,245,133,255,144,253,49,243,69
+    .byte 231,67,172,223,173,122,92,143,128,27,92,104,76,169,221,182,159,249,126,221,230,125,63,243
+    .byte 51,244,231,109,253,173,217,87,79,224,9,60,111,175,245,251,66,242,255,223,255,45,117,10
+    .byte 167,183,127,181,103,245,237,82,192,230,237,238,127,166,154,214,100,157,211,29,191,123,12,211
+    .byte 21,191,50,222,239,79,251,233,218,5,240,179,91,226,35,152,227,157,184,80,180,135,54,109
+    .byte 197,251,107,249,163,208,231,195,241,131,246,239,134,221,75,63,99,179,230,124,223,153,141,202
+    .byte 235,237,22,243,31,103,21,215,231,245,31,243,239,11,101,207,137,125,12,71,182,239,244,127
+    .byte 167,237,54,90,191,157,174,230,152,245,204,174,249,230,101,41,116,213,167,14,103,149,129,153
+    .byte 102,86,220,25,253,182,210,116,147,112,23,47,186,190,95,253,219,107,226,22,103,89,204,231
+    .byte 61,108,221,189,191,255,127,148,24,148,190,65,90,251,120,151,252,222,31,250,163,251,216,213
+    .byte 114,115,249,110,246,122,22,254,229,223,69,99,190,219,45,48,226,102,222,78,38,40,207,166
+    .byte 255,254,124,118,111,194,190,63,143,87,84,252,84,78,159,240,179,247,75,88,254,229,44,58
+    .byte 243,76,120,131,185,234,22,134,83,181,125,99,187,61,29,192,234,78,35,48,189,109,68,123
+    .byte 223,157,67,185,253,198,55,139,214,243,71,222,238,54,170,210,223,203,246,237,255,110,109,181
+    .byte 159,178,126,133,230,125,125,115,240,243,191,142,255,249,207,129,111,111,205,19,238,219,142,209
+    .byte 222,191,233,90,210,244,153,121,111,220,93,255,150,196,107,217,126,123,84,250,94,194,235,181
+    .byte 24,175,174,127,89,31,111,111,250,215,6,127,69,177,246,205,232,37,221,95,46,66,76,211
+    .byte 223,251,133,223,253,165,87,111,81,247,116,179,254,100,90,207,245,191,168,249,182,12,156,222
+    .byte 111,31,134,234,128,255,175,125,214,29,188,233,252,175,186,157,223,226,46,197,150,125,100,250
+    .byte 81,125,179,151,46,183,222,239,245,139,185,170,72,243,125,221,243,118,82,189,147,46,197,191
+    .byte 249,111,177,191,175,95,236,159,26,155,87,255,199,231,73,148,89,105,241,171,117,183,61,231
+    .byte 233,82,205,15,237,196,247,44,15,140,247,215,127,250,91,46,246,20,13,119,64,111,142,221
+    .byte 199,214,177,105,231,157,253,158,157,189,119,255,63,82,60,198,113,228,127,103,177,222,19,9
+    .byte 24,50,54,236,105,253,223,169,113,73,195,204,135,179,102,133,41,229,140,254,233,229,202,254
+    .byte 182,116,190,112,117,203,176,78,82,55,229,25,97,133,127,255,55,145,183,222,123,185,74,92
+    .byte 60,113,169,255,78,248,249,59,80,46,141,98,95,250,255,101,29,246,171,204,222,183,95,238
+    .byte 77,245,91,181,111,102,213,126,159,156,160,91,127,175,231,211,86,163,15,40,79,191,235,79
+    .byte 229,62,125,38,88,195,92,18,255,167,78,69,246,209,54,22,188,39,199,84,249,191,207,6
+    .byte 243,224,40,129,104,221,247,55,172,87,250,243,247,63,190,125,111,107,241,253,254,254,221,171
+    .byte 183,119,178,243,254,254,213,63,193,239,94,76,185,220,171,239,117,236,43,225,41,211,50,44
+    .byte 72,221,233,110,147,156,154,109,190,212,85,230,214,159,151,147,105,181,77,243,60,87,38,215
+    .byte 250,107,71,89,250,212,6,79,202,127,122,107,237,197,252,29,124,245,253,240,250,14,252,156
+    .byte 226,207,148,255,186,234,252,110,166,223,207,141,122,241,219,75,46,251,220,182,190,131,236,123
+    .byte 71,207,140,199,212,119,241,234,215,50,181,48,113,246,107,133,223,183,99,234,77,244,255,53
+    .byte 189,173,207,205,115,175,15,227,50,213,123,93,227,191,106,118,158,66,82,119,60,221,226,230
+    .byte 62,250,207,255,153,127,222,127,138,187,151,26,255,125,236,118,188,110,168,231,171,179,183,129
+    .byte 76,123,171,239,135,137,187,127,241,223,88,223,174,103,154,23,20,51,230,83,119,21,168,204
+    .byte 207,244,153,103,154,183,171,222,245,149,229,177,223,230,116,119,253,227,174,139,55,186,92,63
+    .byte 115,90,197,250,239,254,111,235,43,207,253,253,255,221,254,62,234,131,14,199,33,79,245,166
+    .byte 184,243,93,97,122,99,250,175,211,211,237,222,11,135,236,135,23,247,153,255,203,63,172,206
+    .byte 252,248,173,171,15,173,252,204,244,117,45,213,168,86,94,109,168,81,44,99,35,217,231,136
+    .byte 61,197,251,61,235,149,253,205,161,167,59,77,85,155,246,90,93,104,248,13,85,255,111,67
+    .byte 151,107,179,94,222,207,230,176,234,247,149,118,182,155,239,76,248,249,19,7,191,170,43,157
+    .byte 53,168,169,95,162,221,173,251,188,77,231,221,215,235,230,251,185,178,250,19,23,211,10,190
+    .byte 223,162,95,247,253,244,234,197,151,243,232,65,238,219,34,195,142,171,143,46,103,238,7,127
+    .byte 255,207,126,231,214,187,54,225,206,29,139,147,136,248,222,146,161,111,255,231,199,6,245,163
+    .byte 220,114,21,94,253,146,107,127,238,101,189,206,252,107,213,250,68,147,231,173,99,253,222,252
+    .byte 218,251,124,136,53,180,217,88,115,76,29,222,217,185,239,218,180,86,244,206,255,127,165,130
+    .byte 70,120,242,233,215,228,122,252,143,51,37,87,208,60,6,63,177,215,217,159,217,83,250,74
+    .byte 206,207,60,239,61,169,59,245,66,54,126,233,13,95,51,110,215,135,45,231,7,113,101,231
+    .byte 77,183,39,15,87,126,122,254,118,127,179,139,98,123,109,237,43,195,189,202,247,249,186,153
+    .byte 234,243,221,148,223,243,254,187,249,255,127,127,21,250,43,99,238,43,174,40,181,68,122,201
+    .byte 98,231,221,111,228,103,34,253,127,253,251,13,235,126,31,27,125,177,222,189,167,197,71,229
+    .byte 209,202,78,53,222,110,251,154,197,106,47,254,44,71,175,47,196,59,229,191,157,249,85,207
+    .byte 221,223,59,238,43,244,108,241,137,41,187,123,51,26,191,167,150,245,203,211,191,63,57,15
+    .byte 251,225,109,127,230,221,219,215,236,68,250,111,251,57,221,123,103,171,46,69,56,159,234,27
+    .byte 108,109,68,43,147,199,234,251,28,114,129,207,214,79,198,183,56,234,251,126,26,236,135,86
+    .byte 150,212,234,40,121,237,138,252,239,246,207,119,109,90,185,171,214,110,119,253,40,159,159,110
+    .byte 230,215,208,223,222,221,101,197,63,205,187,86,108,251,250,47,171,141,27,255,179,248,227,165
+    .byte 143,119,75,17,247,47,242,158,251,134,69,214,191,161,3,199,255,107,245,222,155,206,38,221
+    .byte 85,215,49,255,102,215,236,75,114,30,225,58,106,243,75,191,253,205,252,78,20,111,192,255
+    .byte 222,177,206,230,39,252,203,110,251,253,217,94,143,124,254,115,238,221,221,201,111,127,248,191
+    .byte 176,14,186,77,94,12,207,44,161,42,255,14,52,26,110,183,222,255,180,95,191,204,203,187
+    .byte 247,91,27,223,191,190,125,29,111,62,239,109,63,252,253,77,248,53,54,183,253,102,63,127
+    .byte 248,22,255,98,241,130,58,26,220,148,187,185,106,122,127,73,83,54,216,63,255,27,174,63
+    .byte 239,89,252,244,245,218,80,51,75,173,63,12,113,83,133,214,76,141,63,227,255,25,139,219
+    .byte 31,220,248,253,238,96,235,110,183,21,204,123,155,254,220,190,139,159,107,97,77,53,198,239
+    .byte 37,231,66,13,124,247,157,252,166,211,247,249,242,247,191,190,218,133,251,223,248,190,246,153
+    .byte 127,133,105,228,130,118,118,196,42,41,207,181,241,189,239,250,136,255,150,166,255,232,63,255
+    .byte 244,232,141,241,207,85,67,255,148,61,127,109,253,55,5,51,182,125,219,249,215,77,234,159
+    .byte 10,143,181,214,104,113,135,97,220,225,71,111,121,16,134,187,125,175,156,220,134,238,26,247
+    .byte 123,187,118,255,159,31,153,175,59,111,143,121,49,125,230,26,251,250,61,138,149,247,108,142
+    .byte 213,159,215,234,215,127,221,174,168,106,153,250,221,118,253,69,31,135,233,119,183,115,217,215
+    .byte 125,105,191,220,15,191,104,215,239,216,23,53,245,173,85,245,96,76,70,111,89,253,116,230
+    .byte 8,71,225,239,238,117,189,148,177,225,99,169,233,211,172,219,197,87,172,69,211,196,161,189
+    .byte 245,131,96,99,95,221,169,249,253,73,5,184,241,159,85,115,251,191,223,102,83,56,11,212
+    .byte 15,127,44,206,56,241,238,121,247,241,243,126,127,198,103,255,227,202,79,255,102,125,102,219
+    .byte 205,246,209,150,215,127,62,247,190,83,92,199,208,29,38,253,167,45,211,129,88,248,158,201
+    .byte 211,95,59,191,223,174,214,147,201,173,223,191,192,245,19,71,199,228,104,130,222,218,84,239
+    .byte 222,159,253,31,87,253,231,122,126,215,52,114,249,131,130,159,147,198,107,237,245,236,163,147
+    .byte 155,155,234,204,233,239,70,117,230,180,147,155,234,65,249,221,114,67,96,87,151,85,171,209
+    .byte 145,137,247,243,255,205,1,36,140,120,191,252,238,200,206,88,157,242,191,222,39,77,62,14
+    .byte 194,234,238,239,159,95,61,201,231,60,45,77,122,99,37,253,86,237,13,183,207,65,226,119
+    .byte 55,215,69,140,58,91,119,201,82,95,73,181,185,216,185,219,79,80,254,61,209,30,104,164
+    .byte 51,98,15,198,237,50,219,79,47,207,67,181,95,228,215,110,250,111,255,234,78,213,70,245
+    .byte 209,223,4,79,89,70,238,206,178,118,231,232,30,197,188,247,161,62,31,209,249,126,75,211
+    .byte 120,102,245,70,206,206,102,254,77,215,115,238,235,207,191,243,126,159,242,73,124,237,133,201
+    .byte 18,72,172,240,225,14,235,187,239,22,177,92,29,174,143,15,46,178,217,248,43,187,191,241
+    .byte 85,59,78,166,206,155,249,57,255,216,151,127,229,126,105,91,45,162,240,92,191,142,235,226
+    .byte 217,182,225,242,94,125,205,34,173,127,226,230,247,93,166,36,219,135,255,99,31,207,236,91
+    .byte 74,56,162,253,218,215,126,46,75,191,94,141,239,243,118,225,165,247,222,71,117,100,101,77
+    .byte 17,255,151,207,190,182,107,230,127,211,222,109,62,169,155,39,33,113,244,138,199,60,73,123
+    .byte 78,187,231,182,185,107,91,79,183,136,15,190,223,233,247,221,162,248,173,87,156,207,233,198
+    .byte 84,216,253,199,137,62,253,120,255,186,79,142,213,68,255,195,251,209,183,61,220,102,247,190
+    .byte 40,191,121,197,240,205,53,106,74,237,250,239,158,15,172,249,222,242,127,140,239,122,55,95
+    .byte 191,55,243,92,252,247,123,206,165,94,213,219,251,58,239,254,179,251,34,120,171,104,126,192
+    .byte 251,242,201,237,251,219,135,119,71,207,245,141,172,139,133,252,151,23,242,59,191,177,237,191
+    .byte 93,244,221,139,59,199,151,142,207,246,59,22,227,24,79,238,175,159,246,158,232,90,56,219
+    .byte 191,60,6,216,187,173,191,215,248,171,149,219,243,198,49,198,99,255,241,124,105,247,227,252
+    .byte 120,223,79,23,189,138,218,253,138,216,103,33,201,205,245,99,174,230,86,185,245,191,199,239
+    .byte 111,89,216,239,191,157,126,94,214,152,111,91,154,194,63,186,79,190,218,247,223,175,251,63
+    .byte 255,114,63,47,63,157,127,250,104,251,47,220,92,190,92,174,175,242,75,27,56,190,148,133
+    .byte 246,99,187,250,48,205,51,160,35,247,145,255,170,254,89,203,113,228,99,108,233,46,235,179
+    .byte 178,235,247,191,142,95,230,214,181,237,155,239,51,215,46,55,86,82,75,49,9,45,255,30
+    .byte 166,125,217,223,147,229,39,213,199,212,125,139,62,167,94,115,6,236,186,249,40,143,190,111
+    .byte 123,248,187,245,226,51,93,247,173,243,102,28,40,90,230,55,191,191,58,111,251,213,92,243
+    .byte 169,76,127,218,126,174,125,114,87,249,144,170,116,206,69,158,135,100,224,124,118,221,126,77
+    .byte 188,223,219,240,251,216,190,94,86,64,223,168,249,254,109,116,246,239,253,198,222,55,221,246
+    .byte 117,150,182,83,103,254,248,234,220,205,123,99,44,91,241,111,252,167,79,63,223,239,63,173
+    .byte 25,205,110,253,245,247,18,181,212,255,9,143,247,247,99,201,131,216,229,60,90,108,255,14
+    .byte 233,105,84,79,246,81,179,215,70,204,165,185,249,141,10,11,114,239,63,14,254,199,232,95
+    .byte 92,102,161,109,247,87,107,246,213,126,255,75,88,61,185,28,255,147,199,255,235,84,182,153
+    .byte 251,250,124,177,177,219,223,178,232,55,137,219,249,89,233,183,190,251,120,95,245,230,189,72
+    .byte 173,167,52,118,67,115,182,253,239,222,209,20,15,139,95,139,69,127,242,255,99,155,193,213
+    .byte 172,171,233,119,247,191,223,219,133,93,155,126,5,60,28,153,53,166,194,211,205,249,187,92
+    .byte 110,242,47,126,125,253,175,23,113,117,121,207,108,115,191,235,63,255,223,27,46,111,84,247
+    .byte 187,238,31,217,150,239,173,221,238,73,219,195,29,250,201,101,174,237,23,220,221,122,97,67
+    .byte 223,205,235,205,43,10,219,31,218,247,52,251,254,48,254,173,182,63,159,184,158,212,250,103
+    .byte 248,157,28,191,234,232,184,206,143,176,184,143,61,222,179,211,78,87,57,110,181,63,194,235
+    .byte 255,23,86,161,253,204,121,87,43,57,28,166,87,11,118,255,46,247,140,207,168,160,214,56
+    .byte 41,89,149,161,215,238,119,183,255,158,63,164,57,181,239,243,221,234,126,44,222,79,94,237
+    .byte 206,223,175,255,149,83,153,201,161,187,167,67,238,39,162,197,178,223,85,97,218,221,45,137
+    .byte 123,41,239,198,190,243,1,253,173,232,230,190,175,151,184,81,203,224,75,103,111,255,250,184
+.text

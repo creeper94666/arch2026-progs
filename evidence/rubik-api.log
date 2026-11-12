@@ -1,0 +1,4 @@
+PASS baseline 2078 guarded capacity/invalid calls plus full-output validation; actual rv32emu
+PASS single_scan 2078 guarded capacity/invalid calls plus full-output validation; actual rv32emu
+PASS capacity_fast 2078 guarded capacity/invalid calls plus full-output validation; actual rv32emu
+PASS scan_capacity 2078 guarded capacity/invalid calls plus full-output validation; actual rv32emu

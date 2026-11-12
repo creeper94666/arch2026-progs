@@ -1,0 +1,393 @@
+{
+  "bf16": {
+    "input_cases": 1056768,
+    "function_calls": 2113536,
+    "ABI": true,
+    "results": [
+      {
+        "name": "bf16_from_f32",
+        "budget": 150,
+        "stats": {
+          "calls": 335872,
+          "sum": 3686708,
+          "min": 5,
+          "max": 11,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_from_f32_asm",
+        "budget": 60,
+        "stats": {
+          "calls": 335872,
+          "sum": 3686708,
+          "min": 5,
+          "max": 11,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_mul",
+        "budget": 1000,
+        "stats": {
+          "calls": 655360,
+          "sum": 59792819,
+          "min": 12,
+          "max": 136,
+          "worst_a": 1,
+          "worst_b": 1
+        }
+      },
+      {
+        "name": "bf16_mul_asm",
+        "budget": 400,
+        "stats": {
+          "calls": 655360,
+          "sum": 30565800,
+          "min": 13,
+          "max": 89,
+          "worst_a": 1,
+          "worst_b": 127
+        }
+      },
+      {
+        "name": "bf16_sqrt",
+        "budget": 4000,
+        "stats": {
+          "calls": 65536,
+          "sum": 4360468,
+          "min": 9,
+          "max": 127,
+          "worst_a": 382,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_sqrt_asm",
+        "budget": 1500,
+        "stats": {
+          "calls": 65536,
+          "sum": 881926,
+          "min": 7,
+          "max": 18,
+          "worst_a": 128,
+          "worst_b": 0
+        }
+      }
+    ],
+    "official_samples": [
+      {
+        "name": "bf16_from_f32",
+        "stats": {
+          "calls": 8192,
+          "sum": 89908,
+          "min": 5,
+          "max": 11,
+          "worst_a": 4274309483,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_from_f32_asm",
+        "stats": {
+          "calls": 8192,
+          "sum": 89908,
+          "min": 5,
+          "max": 11,
+          "worst_a": 4274309483,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_mul",
+        "stats": {
+          "calls": 65536,
+          "sum": 6086607,
+          "min": 12,
+          "max": 136,
+          "worst_a": 1,
+          "worst_b": 1
+        }
+      },
+      {
+        "name": "bf16_mul_asm",
+        "stats": {
+          "calls": 65536,
+          "sum": 3694228,
+          "min": 13,
+          "max": 89,
+          "worst_a": 1,
+          "worst_b": 127
+        }
+      },
+      {
+        "name": "bf16_sqrt",
+        "stats": {
+          "calls": 65536,
+          "sum": 4360468,
+          "min": 9,
+          "max": 127,
+          "worst_a": 382,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "bf16_sqrt_asm",
+        "stats": {
+          "calls": 65536,
+          "sum": 881926,
+          "min": 7,
+          "max": 18,
+          "worst_a": 128,
+          "worst_b": 0
+        }
+      }
+    ]
+  },
+  "fixed": {
+    "input_pairs": 230400,
+    "function_calls": 1843200,
+    "ABI": true,
+    "count_guards": true,
+    "results": [
+      {
+        "name": "op1",
+        "budget": 1500,
+        "stats": {
+          "calls": 230400,
+          "sum": 6236960,
+          "min": 4,
+          "max": 164,
+          "worst_a": 1,
+          "worst_b": 2147483647
+        }
+      },
+      {
+        "name": "op1_asm",
+        "budget": 600,
+        "stats": {
+          "calls": 230400,
+          "sum": 6236960,
+          "min": 4,
+          "max": 164,
+          "worst_a": 1,
+          "worst_b": 2147483647
+        }
+      },
+      {
+        "name": "op2",
+        "budget": 150,
+        "stats": {
+          "calls": 230400,
+          "sum": 460800,
+          "min": 2,
+          "max": 2,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op2_asm",
+        "budget": 40,
+        "stats": {
+          "calls": 230400,
+          "sum": 460800,
+          "min": 2,
+          "max": 2,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op3",
+        "budget": 150,
+        "stats": {
+          "calls": 230400,
+          "sum": 1152000,
+          "min": 5,
+          "max": 5,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op3_asm",
+        "budget": 40,
+        "stats": {
+          "calls": 230400,
+          "sum": 1152000,
+          "min": 5,
+          "max": 5,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "q_mul",
+        "budget": 3000,
+        "stats": {
+          "calls": 230400,
+          "sum": 67335018,
+          "min": 3,
+          "max": 432,
+          "worst_a": 2147483648,
+          "worst_b": 4294967295
+        }
+      },
+      {
+        "name": "q_mul_asm",
+        "budget": 1200,
+        "stats": {
+          "calls": 230400,
+          "sum": 54291028,
+          "min": 16,
+          "max": 378,
+          "worst_a": 2147483648,
+          "worst_b": 4294967295
+        }
+      }
+    ],
+    "official_samples": [
+      {
+        "name": "op1",
+        "stats": {
+          "calls": 8192,
+          "sum": 232503,
+          "min": 4,
+          "max": 164,
+          "worst_a": 1,
+          "worst_b": 2147483647
+        }
+      },
+      {
+        "name": "op1_asm",
+        "stats": {
+          "calls": 8192,
+          "sum": 232503,
+          "min": 4,
+          "max": 164,
+          "worst_a": 1,
+          "worst_b": 2147483647
+        }
+      },
+      {
+        "name": "op2",
+        "stats": {
+          "calls": 8192,
+          "sum": 16384,
+          "min": 2,
+          "max": 2,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op2_asm",
+        "stats": {
+          "calls": 8192,
+          "sum": 16384,
+          "min": 2,
+          "max": 2,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op3",
+        "stats": {
+          "calls": 8192,
+          "sum": 40960,
+          "min": 5,
+          "max": 5,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "op3_asm",
+        "stats": {
+          "calls": 8192,
+          "sum": 40960,
+          "min": 5,
+          "max": 5,
+          "worst_a": 0,
+          "worst_b": 0
+        }
+      },
+      {
+        "name": "q_mul",
+        "stats": {
+          "calls": 8192,
+          "sum": 2950262,
+          "min": 3,
+          "max": 432,
+          "worst_a": 2147483648,
+          "worst_b": 4294967295
+        }
+      },
+      {
+        "name": "q_mul_asm",
+        "stats": {
+          "calls": 8192,
+          "sum": 2372609,
+          "min": 16,
+          "max": 378,
+          "worst_a": 2147483648,
+          "worst_b": 4294967295
+        }
+      }
+    ]
+  },
+  "gcd": {
+    "checks": 539044,
+    "random_pairs": 100000,
+    "ABI": true,
+    "implementations": [
+      {
+        "name": "gcd_u32",
+        "calls": 269522,
+        "max_instructions": 452,
+        "a": 4294967295,
+        "b": 4294967294
+      },
+      {
+        "name": "gcd_u32_asm",
+        "calls": 269522,
+        "max_instructions": 300,
+        "a": 4294967295,
+        "b": 4294967294
+      }
+    ]
+  },
+  "rubik": {
+    "backend": "actual rv32emu",
+    "variants": [
+      {
+        "variant": "baseline",
+        "elf_sha256": "8191814597c539ad26d363a9f7173974a99eda5d3601af9352c679e8b2deade4",
+        "guarded_calls": 2078
+      },
+      {
+        "variant": "single_scan",
+        "elf_sha256": "ff7ea90ca525dffd8009b28e74dcdfd2c279da978f1d36009e8a4c874c6b4cde",
+        "guarded_calls": 2078
+      },
+      {
+        "variant": "capacity_fast",
+        "elf_sha256": "1b80bd1254ea16936746b8b385517bdc2a52b6cf702785a07bfcc4396d4f11d7",
+        "guarded_calls": 2078
+      },
+      {
+        "variant": "scan_capacity",
+        "elf_sha256": "810eca74207bfcc793f7d55fe6e159321f9ba5a5a6a11c75120625a48e888f0c",
+        "guarded_calls": 2078
+      }
+    ],
+    "guarded_calls_per_variant": 2078,
+    "additional_full_buffer_calls_per_variant": 59,
+    "capacities": "0..34"
+  },
+  "scope": "Statistics of local independent checks. Large raw records/model sources remain in the local experiment archive; official tests are reproducible with the checked-in framework."
+}

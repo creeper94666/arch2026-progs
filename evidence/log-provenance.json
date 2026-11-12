@@ -1,0 +1,26 @@
+[
+  {
+    "public_file": "docs/evidence/cycles.md",
+    "original_sha256": "3e268859af9df690afef00dbd7d2d8e51d71d5ce91234648977f7cf91ab9b223",
+    "public_sha256": "2b1777d154685e3d2cc6728905afbe36a413bca601a42db41024589f0968537b",
+    "normalization": "local absolute paths replaced; ANSI formatting removed; results unchanged"
+  },
+  {
+    "public_file": "docs/evidence/make-test.log",
+    "original_sha256": "308be789eefb4734adcc8d9979a93bf443446aefb15e108421e94e59a9f75583",
+    "public_sha256": "1f4232473b454589a438d65cb4102fb826af7081965c15dc00c6bbe1f33ec130",
+    "normalization": "local absolute paths replaced; ANSI formatting removed; results unchanged"
+  },
+  {
+    "public_file": "docs/evidence/clean-grade.log",
+    "original_sha256": "46da92cf2bd67754b8e7f7ab2125a559b891fc9d2af0abfee9620e9191bda8e1",
+    "public_sha256": "19ecdf0e3af5f5241d8855154ce42c3cd34115e6391f10ecbb32083b229730ca",
+    "normalization": "local absolute paths replaced; ANSI formatting removed; results unchanged"
+  },
+  {
+    "public_file": "docs/evidence/rubik-api.log",
+    "original_sha256": "d7fe86685667e46a949cc6f40cd5cd8bafce8a0eb5b5ddc1c7cc1564ac4636e9",
+    "public_sha256": "d7fe86685667e46a949cc6f40cd5cd8bafce8a0eb5b5ddc1c7cc1564ac4636e9",
+    "normalization": "local absolute paths replaced; ANSI formatting removed; results unchanged"
+  }
+]

@@ -1,0 +1,146 @@
+{
+  "public_grade": 100,
+  "variants": 19,
+  "official_ELF_runs": 76,
+  "original_harness_files_unchanged": 71,
+  "baseline_artifacts_preserved": 287,
+  "C_and_private_tables_unchanged": true,
+  "selected": {
+    "gcd": "even_difference",
+    "bf16": "hybrid_packed_sqrt",
+    "fixed": "unroll4",
+    "rubik": "scan_capacity"
+  },
+  "comparison": [
+    {
+      "prog": "gcd",
+      "variant": "even_difference",
+      "fn": "gcd",
+      "opt": "O1",
+      "before": 101.625,
+      "after": 92.75,
+      "reduction_percent": 8.733087330873309,
+      "allocated": 128,
+      "speed_check": true
+    },
+    {
+      "prog": "fixed",
+      "variant": "unroll4",
+      "fn": "op1",
+      "opt": "O2",
+      "before": 22.125,
+      "after": 22.125,
+      "reduction_percent": 0.0,
+      "allocated": 316,
+      "speed_check": true
+    },
+    {
+      "prog": "fixed",
+      "variant": "unroll4",
+      "fn": "op2",
+      "opt": "O1",
+      "before": 4.0,
+      "after": 4.0,
+      "reduction_percent": 0.0,
+      "allocated": 316,
+      "speed_check": true
+    },
+    {
+      "prog": "fixed",
+      "variant": "unroll4",
+      "fn": "op3",
+      "opt": "O1",
+      "before": 7.0,
+      "after": 7.0,
+      "reduction_percent": 0.0,
+      "allocated": 316,
+      "speed_check": true
+    },
+    {
+      "prog": "fixed",
+      "variant": "unroll4",
+      "fn": "q_mul",
+      "opt": "O1",
+      "before": 214.875,
+      "after": 205.625,
+      "reduction_percent": 4.304828388598022,
+      "allocated": 316,
+      "speed_check": true
+    },
+    {
+      "prog": "rubik",
+      "variant": "scan_capacity",
+      "fn": "solve",
+      "opt": "O3",
+      "before": 26216.833333333332,
+      "after": 26062.0,
+      "reduction_percent": 0.5905874724254727,
+      "allocated": 123788,
+      "speed_check": true
+    },
+    {
+      "prog": "bf16",
+      "variant": "hybrid_packed_sqrt",
+      "fn": "from_f32",
+      "opt": "O1",
+      "before": 12.25,
+      "after": 11.25,
+      "reduction_percent": 8.16326530612245,
+      "allocated": 804,
+      "speed_check": true
+    },
+    {
+      "prog": "bf16",
+      "variant": "hybrid_packed_sqrt",
+      "fn": "mul",
+      "opt": "O2",
+      "before": 66.0,
+      "after": 46.6875,
+      "reduction_percent": 29.261363636363637,
+      "allocated": 804,
+      "speed_check": true
+    },
+    {
+      "prog": "bf16",
+      "variant": "hybrid_packed_sqrt",
+      "fn": "sqrt",
+      "opt": "O3",
+      "before": 20.0625,
+      "after": 16.3125,
+      "reduction_percent": 18.69158878504673,
+      "allocated": 804,
+      "speed_check": true
+    }
+  ],
+  "global_ASM_bounds": {
+    "gcd": 576,
+    "q_mul": 378
+  },
+  "function_observed_max": {
+    "gcd": 300,
+    "bf16_sqrt": 18,
+    "bf16_mul": 89,
+    "q_mul": 378
+  },
+  "pending_submission_items": [
+    "full handwritten Rubik search core",
+    "commit through official hooks and personal fork Actions",
+    "publish English HackMD",
+    "personal CodeTrial"
+  ],
+  "compiler": "xPack GNU RISC-V Embedded GCC 15.2.0-1",
+  "rv32emu_revision": "ffb041bab9d1513e5329f25f486378778dceed13",
+  "publication_status": "Prepared locally; no commit, push, Actions success or HackMD publication claimed.",
+  "upstream_framework_revision": "fd2d7c17db223807c342e3f210c769d23d1865b1",
+  "portable_bloom_data": {
+    "file": "src/rubik/search_core.S",
+    "previous_sha256": "333d33da515e2568e50d3bdad02b3ce6573ced5df3b7390aa367e6c870ee5342",
+    "new_sha256": "3d4fad901b97653b29f66e3ea280f16cfa1ff6a2d869b0251c207a7d28e1a351",
+    "embedded_bytes": 24576,
+    "table_sha256": "2230f5bc6f1ecf7aa24e1e57d1499d2af5cc4ab00a2e3ad4e9df6d72d6e842ee",
+    "change": "Replace an external absolute .incbin dependency with identical inline .byte constants.",
+    "asm_object_byte_identical": true,
+    "O2_ELF_byte_identical": true,
+    "asm_object_sha256": "b341831a2f28fbdacf4bf7e5da3e109ca120459e1478ea41f448dad0c19f463c"
+  }
+}

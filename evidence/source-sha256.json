@@ -1,0 +1,20 @@
+{
+  "src/gcd/gcd.c": "b1ba12bc18a7d6c6a08c4b32303dffdd7e79b7a3aae7c5c90b7ed46556bce49e",
+  "src/gcd/gcd.S": "94b24f2778d2e9764309a5493c60719c3e1b50b9a47353ef3afb248d37c26d1b",
+  "src/gcd/gcd.h": "599be6f3ef55f179fe777e866ee3b3c80f9fe90ca8ebaa61919eee0048a886d2",
+  "src/fixed/fixed.S": "87dc90ba07cad5a343de3992f71ec80c4aed650ad5a2ee3d8edcd8777a8f5935",
+  "src/fixed/fixed.h": "36735c258ed62fe8e62d17902d7fe6bd223677f6529cb23f33dc19bdf0e0ce73",
+  "src/fixed/fixed.c": "3cdc2247671ab1b204b2a0123356726385cac6225c6f43b583acf3ddfe0bb0a1",
+  "src/rubik/sequences.h": "97bac24b40ecd1d34fe4cb4f2ad89541eef67da1662c612a3d12c1dbe280f4cb",
+  "src/rubik/fixed_moves.h": "90bf4509ac5bdca24c72211c03dd0bab8f11fa942eaad51d5ffe67f3ba26feb6",
+  "src/rubik/rubik.c": "5e6c06e74cd83306682bf0b3f9b691fc8bf9f093146ea1f8f68e20e0c5e027f3",
+  "src/rubik/small_rolling.h": "c73a24953ebfae262a715ca741eabcc1192502ee68b3864218170b333e9af0e2",
+  "src/rubik/search_core.S": "3d4fad901b97653b29f66e3ea280f16cfa1ff6a2d869b0251c207a7d28e1a351",
+  "src/rubik/rubik.h": "d2377fbf0505198117176d8b2801b72beb6217a29016f759cea85d7c163c87aa",
+  "src/rubik/rubik.S": "41240432aa7687cce92d20f6a08a7c789e494045ea0f8187f6ef06147e80f5f4",
+  "src/rubik/bloom_bits.h": "a4e27fa6ccfbb796355d54b76c02df8033a1032447e7c773cb5f42e629d76638",
+  "src/rubik/search_tables.h": "dc708d290a8aab6f3221a523b72d1e9ed99bd67889f89f10acfb4613d2320b4a",
+  "src/bf16/bf16.h": "ee0d86f25b0dd2326340a38785d1c7e16db65444d9b26b84323e4f3ef2841888",
+  "src/bf16/bf16.S": "8a80ff21c961b3c9ee93d378250822905dc9e535b88b59772a1f5ca05bea4972",
+  "src/bf16/bf16.c": "0c33d2c314d6a112154ca38dfc660420c41240006b0eae75bbcf328746374d22"
+}
